@@ -25,7 +25,7 @@ src/component/Admin/Settings/Email/EmailTemplateEditor.tsx: error TS6133: 'templ
 src/component/Admin/Share/ShareRow.tsx: error TS2339: Property 'price' does not exist on type 'Share'.
 src/component/Common/Captcha/ReCaptchaV2.tsx: error TS2339: Property 'getValue' does not exist on type 'never'.
 src/component/Common/Captcha/ReCaptchaV2.tsx: error TS2339: Property 'reset' does not exist on type 'never'.
-src/component/Common/Captcha/ReCaptchaV2.tsx: error TS7016: Could not find a declaration file for module 'react-google-recaptcha'. '/root/Projects/Ling/OpenCloudreve/assets/node_modules/react-google-recaptcha/lib/index.js' implicitly has an 'any' type.
+src/component/Common/Captcha/ReCaptchaV2.tsx: error TS7016: Could not find a declaration file for module 'react-google-recaptcha'. 'node_modules/react-google-recaptcha/lib/index.js' implicitly has an 'any' type.
 src/component/Common/Captcha/TurnstileCaptcha.tsx: error TS2339: Property 'reset' does not exist on type 'never'.
 src/component/Common/ErrorBoundary.tsx: error TS2339: Property 'stack' does not exist on type '{}'.
 src/component/Common/ErrorBoundary.tsx: error TS2339: Property 'stack' does not exist on type '{}'.
@@ -40,7 +40,7 @@ src/component/FileManager/Dialogs/DirectLinks/DirectLinkItem.tsx: error TS6133: 
 src/component/FileManager/Explorer/EmojiIcon.tsx: error TS2769: No overload matches this call.
 src/component/FileManager/Explorer/GalleryView/GalleryImage.tsx: error TS2339: Property 'showLock' does not exist on type '{ onClick: (e: MouseEvent<HTMLElement, MouseEvent>) => void; fmIndex: number; isSelected: FileResponse; isLoadingIndicator: boolean | undefined; ... 13 more ...; thumbHeight: number | undefined; }'.
 src/component/FileManager/Explorer/ListView/Cell.tsx: error TS2322: Type '{ children: Element; action?: Ref<PopoverActions> | undefined; anchorEl?: Element | (() => Element) | PopoverVirtualElement | (() => PopoverVirtualElement) | null | undefined; ... 299 more ...; open: boolean; }' is not assignable to type 'PopoverProps'.
-src/component/FileManager/Explorer/ListView/Cell.tsx: error TS7016: Could not find a declaration file for module 'react-highlight-words'. '/root/Projects/Ling/OpenCloudreve/assets/node_modules/react-highlight-words/dist/main.js' implicitly has an 'any' type.
+src/component/FileManager/Explorer/ListView/Cell.tsx: error TS7016: Could not find a declaration file for module 'react-highlight-words'. 'node_modules/react-highlight-words/dist/main.js' implicitly has an 'any' type.
 src/component/FileManager/Explorer/ListView/Column.tsx: error TS2322: Type 'number | undefined' is not assignable to type 'number'.
 src/component/FileManager/Explorer/ListView/Row.tsx: error TS6133: 'theme' is declared but its value is never read.
 src/component/FileManager/Search/SearchIndicator.tsx: error TS6133: 'theme' is declared but its value is never read.

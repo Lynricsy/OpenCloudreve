@@ -9,10 +9,11 @@ baseline="$root/.github/tsc-baseline.txt"
 current="$(mktemp)"
 trap 'rm -f "$current"' EXIT
 
-# 去掉行列号并按字节序排序，避免无关改动导致行号漂移造成误报
+# 去掉行列号与本机绝对路径并按字节序排序，避免行号漂移或检出目录不同造成误报
 (cd "$root/assets" && npx tsc --noEmit -p . 2>&1 || true) |
   grep "error TS" |
   sed -E 's/\([0-9]+,[0-9]+\)//' |
+  sed "s#${root}/assets/##g" |
   LC_ALL=C sort >"$current"
 
 if [[ "${1:-}" == "--update" ]]; then
