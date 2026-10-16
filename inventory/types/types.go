@@ -24,6 +24,14 @@ type (
 	PinedFile struct {
 		Uri  string `json:"uri"`
 		Name string `json:"name,omitempty"`
+		// Locked 为 true 表示该固定项来自用户组默认配置，用户无法取消固定
+		Locked bool `json:"locked,omitempty"`
+	}
+
+	// DefaultPinnedShare 用户组默认固定到侧栏的分享
+	DefaultPinnedShare struct {
+		ShareID int    `json:"share_id"`
+		Name    string `json:"name"`
 	}
 
 	// GroupSetting 用户组其他配置
@@ -40,6 +48,8 @@ type (
 		AvailablePolicies []int `json:"available_policies,omitempty"`
 		// AllowedNodes 用户组可用的节点 ID 白名单，为空表示允许全部节点
 		AllowedNodes []int `json:"allowed_nodes,omitempty"`
+		// DefaultPinned 用户组成员侧栏默认固定的分享，用户不可取消
+		DefaultPinned []DefaultPinnedShare `json:"default_pinned,omitempty"`
 	}
 
 	// PolicySetting 非公有的存储策略属性

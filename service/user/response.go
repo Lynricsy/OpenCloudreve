@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cloudreve/Cloudreve/v4/application/constants"
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/user"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
 	"github.com/cloudreve/Cloudreve/v4/pkg/boolset"
+	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -171,11 +173,63 @@ func BuildUser(user *ent.User, idEncoder hashid.Encoder) User {
 		PreferredTheme:      user.Settings.PreferredTheme,
 		Anonymous:           user.ID == 0,
 		Group:               BuildGroup(user.Edges.Group, idEncoder),
-		Pined:               user.Settings.Pined,
+		Pined:               buildPined(user, idEncoder),
 		Language:            user.Settings.Language,
 		DisableViewSync:     user.Settings.DisableViewSync,
 		ShareLinksInProfile: user.Settings.ShareLinksInProfile,
 	}
+}
+
+// buildPined 合并用户组默认固定分享（锁定、置顶）与用户自己的固定项，
+// 用户固定项中与组默认项指向同一分享根目录的条目会被去重（以组默认为准）。
+func buildPined(user *ent.User, idEncoder hashid.Encoder) []types.PinedFile {
+	defaults := BuildGroupDefaultPins(user.Edges.Group, idEncoder)
+	if len(defaults) == 0 {
+		return user.Settings.Pined
+	}
+
+	res := make([]types.PinedFile, 0, len(defaults)+len(user.Settings.Pined))
+	res = append(res, defaults...)
+	for _, pin := range user.Settings.Pined {
+		if !IsGroupDefaultPin(pin.Uri, defaults) {
+			res = append(res, pin)
+		}
+	}
+
+	return res
+}
+
+// BuildGroupDefaultPins 将用户组配置的默认固定分享转换为锁定的侧栏固定项。
+// 分享是否仍然存在不在此处校验，失效的分享由分享页面在打开时报错。
+func BuildGroupDefaultPins(group *ent.Group, idEncoder hashid.Encoder) []types.PinedFile {
+	if group == nil || group.Settings == nil || len(group.Settings.DefaultPinned) == 0 {
+		return nil
+	}
+
+	return lo.Map(group.Settings.DefaultPinned, func(s types.DefaultPinnedShare, _ int) types.PinedFile {
+		return types.PinedFile{
+			Uri:    fs.NewShareUri(hashid.EncodeShareID(idEncoder, s.ShareID), ""),
+			Name:   s.Name,
+			Locked: true,
+		}
+	})
+}
+
+// IsGroupDefaultPin 判断 uri 是否与某个组默认固定项指向同一分享根目录（忽略分享密码）。
+func IsGroupDefaultPin(uriStr string, defaults []types.PinedFile) bool {
+	uri, err := fs.NewUriFromString(uriStr)
+	if err != nil || uri.FileSystem() != constants.FileSystemShare || uri.U.RawQuery != "" {
+		return false
+	}
+
+	for _, d := range defaults {
+		defaultUri, err := fs.NewUriFromString(d.Uri)
+		if err == nil && uri.IsSame(defaultUri, "") {
+			return true
+		}
+	}
+
+	return false
 }
 
 type OauthGrant struct {

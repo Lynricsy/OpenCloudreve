@@ -166,6 +166,9 @@ func (s *UpsertGroupService) Update(c *gin.Context) (*GetGroupResponse, error) {
 	}
 
 	sanitizeAvailablePolicies(c, dep, s.Group)
+	if err := validateDefaultPinned(c, dep, s.Group); err != nil {
+		return nil, err
+	}
 	group, err := groupClient.Upsert(c, s.Group)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeDBError, "Failed to update group", err)
@@ -184,6 +187,9 @@ func (s *UpsertGroupService) Create(c *gin.Context) (*GetGroupResponse, error) {
 	}
 
 	sanitizeAvailablePolicies(c, dep, s.Group)
+	if err := validateDefaultPinned(c, dep, s.Group); err != nil {
+		return nil, err
+	}
 	group, err := groupClient.Upsert(c, s.Group)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeDBError, "Failed to create group", err)
@@ -221,4 +227,30 @@ func sanitizeAvailablePolicies(ctx context.Context, dep dependency.Dep, group *e
 	}
 
 	group.Settings.AvailablePolicies = filtered
+}
+
+// validateDefaultPinned 校验用户组默认固定分享均存在，并为未命名的项回填分享源文件名。
+func validateDefaultPinned(ctx context.Context, dep dependency.Dep, group *ent.Group) error {
+	if group.Settings == nil || len(group.Settings.DefaultPinned) == 0 {
+		return nil
+	}
+
+	shareClient := dep.ShareClient()
+	loadCtx := context.WithValue(ctx, inventory.LoadShareFile{}, true)
+	for i, pinned := range group.Settings.DefaultPinned {
+		share, err := shareClient.GetByID(loadCtx, pinned.ShareID)
+		if err != nil {
+			return serializer.NewError(serializer.CodeParamErr, "Share not found", err)
+		}
+
+		if pinned.Name == "" {
+			if share.Edges.File != nil {
+				group.Settings.DefaultPinned[i].Name = share.Edges.File.Name
+			} else {
+				group.Settings.DefaultPinned[i].Name = strconv.Itoa(share.ID)
+			}
+		}
+	}
+
+	return nil
 }
