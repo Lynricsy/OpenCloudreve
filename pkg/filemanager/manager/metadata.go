@@ -266,6 +266,22 @@ var (
 							}
 
 							return nil
+						case types.CustomPropsTypeUser:
+							if patch.Value == "" {
+								return nil
+							}
+
+							// 值为用户 hashid，须能解码且对应用户存在
+							uid, err := m.hasher.Decode(patch.Value, hashid.UserID)
+							if err != nil {
+								return fmt.Errorf("invalid user id")
+							}
+
+							if _, err := m.dep.UserClient().GetByID(ctx, uid); err != nil {
+								return fmt.Errorf("user not found")
+							}
+
+							return nil
 						default:
 							return nil
 						}

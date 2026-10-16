@@ -380,6 +380,7 @@ const (
 	CustomPropsTypeMultiSelect = "multi_select"
 	CustomPropsTypeLink        = "link"
 	CustomPropsTypeRating      = "rating"
+	CustomPropsTypeUser        = "user"
 )
 
 const (
