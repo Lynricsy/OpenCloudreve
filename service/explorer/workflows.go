@@ -113,6 +113,11 @@ func (service *DownloadWorkflowService) CreateDownloadTask(c *gin.Context) ([]*T
 		return nil, serializer.NewError(serializer.CodeParamErr, "Invalid destination", err)
 	}
 
+	// 任务在后台执行时不携带令牌 scope，需在创建时校验跨用户写入权限
+	if err := checkTaskUrisAccess(c, user, true, service.Dst); err != nil {
+		return nil, err
+	}
+
 	// Validate dst
 	_, err = m.Get(c, dst, dbfs.WithRequiredCapabilities(dbfs.NavigatorCapabilityCreateFile))
 	if err != nil {
@@ -126,6 +131,9 @@ func (service *DownloadWorkflowService) CreateDownloadTask(c *gin.Context) ([]*T
 	}
 
 	// Validate src file
+	if err := checkTaskUrisAccess(c, user, false, service.SrcFile); err != nil {
+		return nil, err
+	}
 	if service.SrcFile != "" {
 		src, err := fs.NewUriFromString(service.SrcFile)
 		if err != nil {
@@ -215,6 +223,13 @@ func (service *ArchiveWorkflowService) CreateExtractTask(c *gin.Context) (*TaskR
 		return nil, serializer.NewError(serializer.CodeParamErr, "No source files", nil)
 	}
 
+	if err := checkTaskUrisAccess(c, user, true, service.Dst); err != nil {
+		return nil, err
+	}
+	if err := checkTaskUrisAccess(c, user, false, service.Src[0]); err != nil {
+		return nil, err
+	}
+
 	// Validate destination
 	if _, err := m.Get(c, dst, dbfs.WithRequiredCapabilities(dbfs.NavigatorCapabilityCreateFile)); err != nil {
 		return nil, serializer.NewError(serializer.CodeParamErr, "Invalid destination", err)
@@ -253,6 +268,13 @@ func (service *ArchiveWorkflowService) CreateCompressTask(c *gin.Context) (*Task
 	dst, err := fs.NewUriFromString(service.Dst)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeParamErr, "Invalid destination", err)
+	}
+
+	if err := checkTaskUrisAccess(c, user, true, service.Dst); err != nil {
+		return nil, err
+	}
+	if err := checkTaskUrisAccess(c, user, false, service.Src...); err != nil {
+		return nil, err
 	}
 
 	// Create a placeholder file then delete it to validate the destination
@@ -326,6 +348,32 @@ func nodeIDOf(n *ent.Node) int {
 // nodeHasCapability 判断节点是否具备指定能力，NodeCapabilityNone 视为任意节点均满足。
 func nodeHasCapability(n *ent.Node, capability types.NodeCapability) bool {
 	return capability == types.NodeCapabilityNone || (n.Capabilities != nil && n.Capabilities.Enabled(int(capability)))
+}
+
+// checkTaskUrisAccess 校验任务涉及的 URI：指向他人“我的文件”空间时，要求当前用户可跨用户读取
+// （write=false）或修改（write=true）他人文件（见 dbfs.CanAccessOthersFiles）。任务在后台执行时
+// 不携带请求令牌的 scope，因此必须在创建任务时完成该校验。无法解析或不属于“我的文件”的 URI
+// 直接放行，交由后续原有逻辑处理。
+func checkTaskUrisAccess(c *gin.Context, u *ent.User, write bool, uris ...string) error {
+	hasher := dependency.FromContext(c).HashIDEncoder()
+	selfID := hashid.EncodeUserID(hasher, u.ID)
+	for _, raw := range uris {
+		uri, err := fs.NewUriFromString(raw)
+		if err != nil || uri.FileSystem() != constants.FileSystemMy {
+			continue
+		}
+
+		uid, err := hasher.Decode(uri.ID(selfID), hashid.UserID)
+		if err != nil || uid == u.ID {
+			continue
+		}
+
+		if !dbfs.CanAccessOthersFiles(c, u, write) {
+			return dbfs.ErrPermissionDenied
+		}
+	}
+
+	return nil
 }
 
 type (
@@ -460,6 +508,10 @@ func (service *RelocateWorkflowService) CreateRelocateTask(c *gin.Context) (*Tas
 	uris, err := fs.NewUriFromStrings(service.Src...)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeParamErr, "Invalid source", err)
+	}
+
+	if err := checkTaskUrisAccess(c, user, true, service.Src...); err != nil {
+		return nil, err
 	}
 
 	for _, uri := range uris {
