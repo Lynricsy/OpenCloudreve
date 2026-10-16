@@ -2,6 +2,7 @@ package explorer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -87,6 +88,14 @@ func (service *CreateUploadSessionService) Create(c context.Context) (*UploadSes
 
 	credential, err := m.CreateUploadSession(c, uploadRequest)
 	if err != nil {
+		// 容量不足时向用户发送配额超出通知（内部去重），通知失败不影响原错误返回
+		var appErr serializer.AppError
+		if errors.As(err, &appErr) && appErr.ErrCode() == serializer.CodeInsufficientCapacity {
+			if notifyErr := m.CheckIfCapacityExceeded(c, service.Size); notifyErr != nil {
+				dep.Logger().Warning("Failed to check capacity exceeded notification: %s", notifyErr)
+			}
+		}
+
 		return nil, err
 	}
 

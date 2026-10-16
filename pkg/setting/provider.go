@@ -56,6 +56,8 @@ type (
 		ActivationEmailTemplate(ctx context.Context) []EmailTemplate
 		// ResetEmailTemplate returns the email template for reset password.
 		ResetEmailTemplate(ctx context.Context) []EmailTemplate
+		// ExceedQuotaEmailTemplate returns the email template for storage quota exceeded notification.
+		ExceedQuotaEmailTemplate(ctx context.Context) []EmailTemplate
 		// TokenAuth returns token based auth related settings.
 		TokenAuth(ctx context.Context) *TokenAuth
 		// HashIDSalt returns the salt used for hash ID generation.
@@ -718,6 +720,16 @@ func (s *settingProvider) TokenAuth(ctx context.Context) *TokenAuth {
 
 func (s *settingProvider) ResetEmailTemplate(ctx context.Context) []EmailTemplate {
 	src := s.getString(ctx, "mail_reset_template", "[]")
+	var templates []EmailTemplate
+	if err := json.Unmarshal([]byte(src), &templates); err != nil {
+		return []EmailTemplate{}
+	}
+
+	return templates
+}
+
+func (s *settingProvider) ExceedQuotaEmailTemplate(ctx context.Context) []EmailTemplate {
+	src := s.getString(ctx, "mail_exceed_quota_template", "[]")
 	var templates []EmailTemplate
 	if err := json.Unmarshal([]byte(src), &templates); err != nil {
 		return []EmailTemplate{}

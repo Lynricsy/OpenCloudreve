@@ -11,6 +11,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
+	"github.com/cloudreve/Cloudreve/v4/pkg/email"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs/dbfs"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/lock"
@@ -23,6 +24,10 @@ import (
 const (
 	EntityUrlCacheKeyPrefix     = "entity_url_"
 	DownloadSentinelCachePrefix = "download_sentinel_"
+	QuotaExceededNotifiedPrefix = "quota_exceeded_notified_"
+
+	// quotaExceededNotifyTTL 配额超出通知的去重时长（秒）
+	quotaExceededNotifyTTL = 86400
 )
 
 type (
@@ -249,16 +254,46 @@ func (m *manager) Capacity(ctx context.Context) (*fs.Capacity, error) {
 	return res, nil
 }
 
-func (m *manager) CheckIfCapacityExceeded(ctx context.Context) error {
+func (m *manager) CheckIfCapacityExceeded(ctx context.Context, requiredSize int64) error {
+	if m.user == nil || inventory.IsAnonymousUser(m.user) || m.user.Email == "" {
+		return nil
+	}
+
 	ctx = context.WithValue(ctx, inventory.LoadUserGroup{}, true)
 	capacity, err := m.Capacity(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get user capacity: %w", err)
 	}
 
-	if capacity.Used <= capacity.Total {
+	// 配额为 0 表示不限容量
+	if capacity.Total <= 0 || capacity.Used+requiredSize <= capacity.Total {
 		return nil
 	}
+
+	// 同一用户 24 小时内只通知一次
+	notifiedKey := fmt.Sprintf("%s%d", QuotaExceededNotifiedPrefix, m.user.ID)
+	if _, ok := m.kv.Get(notifiedKey); ok {
+		return nil
+	}
+
+	if err := m.kv.Set(notifiedKey, true, quotaExceededNotifyTTL); err != nil {
+		return fmt.Errorf("failed to mark quota exceeded notification: %w", err)
+	}
+
+	// 发信在后台进行，使用不随请求结束而取消的上下文
+	bgCtx := context.WithoutCancel(ctx)
+	user := m.user
+	go func() {
+		title, body, err := email.NewExceedQuotaEmail(bgCtx, m.settings, user, capacity.Used, capacity.Total)
+		if err != nil {
+			m.l.Warning("Failed to generate quota exceeded email for user %d: %s", user.ID, err)
+			return
+		}
+
+		if err := m.dep.EmailClient(bgCtx).Send(bgCtx, user.Email, title, body); err != nil {
+			m.l.Warning("Failed to send quota exceeded email to user %d: %s", user.ID, err)
+		}
+	}()
 
 	return nil
 }

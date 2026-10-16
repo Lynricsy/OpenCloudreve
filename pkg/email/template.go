@@ -109,6 +109,72 @@ func NewActivationEmail(ctx context.Context, settings setting.Provider, user *en
 	return resTitle.String(), resBody.String(), nil
 }
 
+// ExceedQuotaContext 存储配额超出通知邮件的模板变量
+type ExceedQuotaContext struct {
+	*CommonContext
+	User  *ent.User
+	Used  string
+	Total string
+}
+
+// NewExceedQuotaEmail 根据模板生成存储配额超出通知邮件，used/total 为字节数，渲染时格式化为可读容量。
+func NewExceedQuotaEmail(ctx context.Context, settings setting.Provider, user *ent.User, used, total int64) (string, string, error) {
+	templates := settings.ExceedQuotaEmailTemplate(ctx)
+	if len(templates) == 0 {
+		return "", "", fmt.Errorf("exceed quota email template not configured")
+	}
+
+	selected := selectTemplate(templates, user)
+	quotaCtx := ExceedQuotaContext{
+		CommonContext: commonContext(ctx, settings),
+		User:          user,
+		Used:          formatSize(used),
+		Total:         formatSize(total),
+	}
+
+	tmplTitle, err := template.New("exceedQuotaTitle").Parse(selected.Title)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse email title: %w", err)
+	}
+
+	var resTitle strings.Builder
+	err = tmplTitle.Execute(&resTitle, quotaCtx.templateData())
+	if err != nil {
+		return "", "", fmt.Errorf("failed to execute email title: %w", err)
+	}
+
+	tmplBody, err := template.New("exceedQuotaBody").Parse(selected.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse email template: %w", err)
+	}
+
+	var resBody strings.Builder
+	err = tmplBody.Execute(&resBody, quotaCtx.templateData())
+	if err != nil {
+		return "", "", fmt.Errorf("failed to execute email template: %w", err)
+	}
+
+	return resTitle.String(), resBody.String(), nil
+}
+
+// formatSize 将字节数格式化为以 1024 为进制的可读容量，例如 "1.5 GB"。
+func formatSize(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+
+	units := []string{"KB", "MB", "GB", "TB", "PB", "EB"}
+	value := float64(size) / unit
+	i := 0
+	for value >= unit && i < len(units)-1 {
+		value /= unit
+		i++
+	}
+
+	return strings.TrimSuffix(fmt.Sprintf("%.2f", value), ".00") + " " + units[i]
+}
+
 func commonContext(ctx context.Context, settings setting.Provider) *CommonContext {
 	logo := settings.Logo(ctx)
 	siteUrl := settings.SiteURL(ctx)
@@ -162,6 +228,15 @@ func (c ActivationContext) templateData() map[string]any {
 		"CommonContext": c.CommonContext.templateData(),
 		"User":          c.User,
 		"Url":           c.Url,
+	}
+}
+
+func (c ExceedQuotaContext) templateData() map[string]any {
+	return map[string]any{
+		"CommonContext": c.CommonContext.templateData(),
+		"User":          c.User,
+		"Used":          c.Used,
+		"Total":         c.Total,
 	}
 }
 
