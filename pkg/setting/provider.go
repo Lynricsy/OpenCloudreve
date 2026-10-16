@@ -158,6 +158,8 @@ type (
 		MusicCoverThumbExts(ctx context.Context) []string
 		// Cron returns the crontab settings.
 		Cron(ctx context.Context, t CronType) string
+		// GDriveBackup returns the Google Drive backup settings.
+		GDriveBackup(ctx context.Context) *GDriveBackup
 		// Theme returns the theme settings.
 		Theme(ctx context.Context) *Theme
 		// Logo returns the logo settings.
@@ -736,6 +738,29 @@ func (s *settingProvider) ExceedQuotaEmailTemplate(ctx context.Context) []EmailT
 	}
 
 	return templates
+}
+
+func (s *settingProvider) GDriveBackup(ctx context.Context) *GDriveBackup {
+	var policies []int
+	if err := json.Unmarshal([]byte(s.getString(ctx, "gdrive_backup_policies", "[]")), &policies); err != nil {
+		policies = nil
+	}
+	retention := s.getInt(ctx, "gdrive_backup_retention_days", 7)
+	if retention < 1 {
+		retention = 1
+	}
+	return &GDriveBackup{
+		Enabled:       s.getBoolean(ctx, "gdrive_backup_enabled", false),
+		ClientID:      s.getString(ctx, "gdrive_backup_client_id", ""),
+		ClientSecret:  s.getString(ctx, "gdrive_backup_client_secret", ""),
+		RefreshToken:  s.getString(ctx, "gdrive_backup_refresh_token", ""),
+		RootID:        s.getString(ctx, "gdrive_backup_root_id", ""),
+		Policies:      policies,
+		RetentionDays: retention,
+		Encrypt:       s.getBoolean(ctx, "gdrive_backup_encrypt", false),
+		Key:           s.getString(ctx, "gdrive_backup_key", ""),
+		Proxy:         s.getString(ctx, "gdrive_backup_proxy", ""),
+	}
 }
 
 func (s *settingProvider) ActivationEmailTemplate(ctx context.Context) []EmailTemplate {

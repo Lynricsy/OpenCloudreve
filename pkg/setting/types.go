@@ -111,11 +111,28 @@ var (
 	CronTypeEntityCollect    = CronType("entity_collect")
 	CronTypeTrashBinCollect  = CronType("trash_bin_collect")
 	CronTypeOauthCredRefresh = CronType("oauth_cred_refresh")
+	CronTypeGDriveBackup     = CronType("gdrive_backup")
 )
 
 type Theme struct {
 	Themes       string
 	DefaultTheme string
+}
+
+// GDriveBackup Google Drive 备份设置。
+type GDriveBackup struct {
+	Enabled      bool
+	ClientID     string
+	ClientSecret string
+	RefreshToken string
+	RootID       string
+	// Policies 参与备份的存储策略 ID（负载均衡策略在备份时展开为子策略）
+	Policies      []int
+	RetentionDays int
+	Encrypt       bool
+	// Key age 私钥字符串
+	Key   string
+	Proxy string
 }
 
 type Logo struct {
