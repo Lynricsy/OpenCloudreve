@@ -278,12 +278,14 @@ type FileResponse struct {
 }
 
 type ExtendedInfo struct {
-	StoragePolicy *StoragePolicy      `json:"storage_policy,omitempty"`
-	StorageUsed   int64               `json:"storage_used"`
-	Shares        []Share             `json:"shares,omitempty"`
-	Entities      []Entity            `json:"entities,omitempty"`
-	View          *types.ExplorerView `json:"view,omitempty"`
-	DirectLinks   []DirectLink        `json:"direct_links,omitempty"`
+	StoragePolicy *StoragePolicy `json:"storage_policy,omitempty"`
+	// StoragePolicyInherited 目录未显式挂载存储策略（继承上级/用户组默认）时为 true；文件恒为 false。
+	StoragePolicyInherited bool                `json:"storage_policy_inherited"`
+	StorageUsed            int64               `json:"storage_used"`
+	Shares                 []Share             `json:"shares,omitempty"`
+	Entities               []Entity            `json:"entities,omitempty"`
+	View                   *types.ExplorerView `json:"view,omitempty"`
+	DirectLinks            []DirectLink        `json:"direct_links,omitempty"`
 }
 
 type DirectLink struct {
@@ -448,8 +450,9 @@ func BuildExtendedInfo(ctx context.Context, u *ent.User, f fs.File, hasher hashi
 	base := dep.SettingProvider().SiteURL(ctx)
 
 	ext := &ExtendedInfo{
-		StoragePolicy: BuildStoragePolicy(extendedInfo.StoragePolicy, hasher),
-		StorageUsed:   extendedInfo.StorageUsed,
+		StoragePolicy:          BuildStoragePolicy(extendedInfo.StoragePolicy, hasher),
+		StoragePolicyInherited: f.Type() == types.FileTypeFolder && f.PolicyID() <= 0,
+		StorageUsed:            extendedInfo.StorageUsed,
 		Entities: lo.Map(f.Entities(), func(e fs.Entity, index int) Entity {
 			return BuildEntity(ctx, extendedInfo, e, hasher)
 		}),
