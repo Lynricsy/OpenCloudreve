@@ -17,7 +17,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 ## 2. 构建、运行与验证
 
 - **后端编译**依赖 `application/statics/assets.zip`（`go:embed`，已 gitignore）。只需要编译时，放一个占位 zip 即可，内含 `assets/build/index.html`。本机没有 `zip` 命令，用 Python 的 `zipfile` 生成。
-- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.2`）；CI 发布 tag 时会强制要求 tag 与常量一致。
+- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.3`）；CI 发布 tag 时会强制要求 tag 与常量一致。新增 `DefaultSettings` 键时必须同时提升版本号：`migrateDefaultSettings` 只在库里没有当前版本标记时运行，而 `SettingClient.Set` 只更新已存在的行，缺行时设置接口会静默不生效。
 - **正式打包**：`.build/build-assets.sh <版本号>`。这个脚本会把前端 `package.json` 的版本改成传入的版本号，需要系统有 `zip` 命令。如果直接 `yarn build`，启动时会报 `Static resource version mismatch`，页面仍能用。版本号必须等于 `constants.BackendVersion`。
 - **前端**：用 `yarn`（`npm i -g yarn@1`）。`assets/` 有 husky pre-commit，会对暂存文件跑 prettier（lint-staged）。
 - **类型检查**：`.github/scripts/tsc-check.sh`（需先在 `assets/` 里 `yarn install`）。上游本身就带一批 TS 错误（分叉时 127 条，现在 115 条），基线存在 `.github/tsc-baseline.txt`，脚本会去掉行列号、按字节序排序后对比，出现基线之外的错误就失败。`vite build` 不做类型检查，所以 `yarn build` 通过不代表类型正确。错误减少，或者因为权限位增减导致 `GroupPermission` 类型字面量的报错文本变化时，确认没有真正新增错误后，运行 `.github/scripts/tsc-check.sh --update` 更新基线。
@@ -32,6 +32,8 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
   - 管理员：新库里第一个注册的用户（`POST /api/v4/user`）就是管理员，登录接口是 `POST /api/v4/session/token`。
   - 文件链接：新库的站点 URL 默认是 `localhost:5212`，下载链接需要自己改主机名。
   - 本地存储策略：后台新建时，`dir_name_rule` 会被重置为默认值（上游行为），建好后要再 `PUT /admin/policy/:id` 一次才能改。
+  - 从机节点：`PUT /admin/node` 的 `node.capabilities` 必须传（例如 `"AA=="`），否则会在事务中 panic，SQLite 写锁一直不释放，只能重启进程。从机的 `[Slave] Secret` 至少 64 个字符。从机上传完成后会回调主机，所以要先把 `siteURL` 改成主机的实际地址。
+  - Google Drive 备份：没有真实的 Google 账号时，可以写一个 HTTPS MITM 代理来伪造 `oauth2.googleapis.com` 和 `www.googleapis.com`（用自签 CA 处理 CONNECT），启动主机和从机时带上 `SSL_CERT_FILE=<CA>`，再把 `gdrive_backup_proxy` 设为这个代理。授权流程是先调 `POST /admin/backup/oauth/signin`，从返回的 URL 里取出 state，然后调 callback。
 
 ## 3. 本分支的功能与不变量（修改前必读）
 
@@ -56,6 +58,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 - `PolicySetting.lb_children [{id,weight}]`：负载均衡策略的子策略。
 - `files.storage_policy_files` 的含义：在**目录**上，`>0` 表示显式挂载了策略，NULL 表示继承；在**文件**上，记录主实体所在的策略。迁移补丁 `clear_folder_storage_policy`（EndVersion `4.19.2`）会**无条件**清空所有目录上的这一列，用来清理旧版本写入的值；它只在从上游版本（≤ 4.19.1）升级时跑一次。这个补丁已经随 4.19.2 发布，EndVersion 不能再改。
 - 设置项 `mail_exceed_quota_template`；KV 键 `quota_exceeded_notified_<uid>`（24 小时内只发一次）。
+- Google Drive 备份设置项 `gdrive_backup_*` 与 `cron_gdrive_backup`（`setting.Provider.GDriveBackup`）。`gdrive_backup_refresh_token` 在 `RedactedSettings` 里，只由 OAuth 回调写入；`gdrive_backup_root_id` 由 `backup.Open` 自动维护。备份不写数据库：sha256 缓存和文件清单都在 Drive 上的快照里。
 
 ### 3.4 关键不变量
 - **负载均衡（LB）**：任何文件或实体都不引用 LB 策略。所有写入路径都先经过 `dbfs.resolvePolicy` / `inventory.ResolveLoadBalance` 解析成具体子策略；`manager.GetStorageDriver` 遇到 LB 直接报错。`PUT /file/upload` 返回的 `storage_policy` 永远不是 LB，桌面端靠这一点选择上传方式。同一文件的新版本、缩略图优先放在该文件已有实体所在的子策略。LB 与普通类型之间不能互相切换；导入和转移都拒绝 LB。
@@ -71,9 +74,17 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
   - 容量按目标所有者计算（`Capacity(ctx, u)` 用 `u.Storage`）；保存路径里的 `{uid}` 用文件所有者；禁止跨所有者移动。
   - 前端用 `canManageFile`（`useActionDisplayOpt.ts`）判断管理员能否操作，**不要**把后端的 `Owned` 字段改成对管理员恒为 true，因为它还决定分享设置等信息是否可见。
 - **目录直链**：只支持重定向型直链。路由是 `/f/:id/:name/*path` 和 `/f/d/:id/:name/*path`。子路径中的空段、`.`、`..` 一律返回 404；每次访问都会重新检查所有者所在组的权限。
+- **Google Drive 备份**（`pkg/backup` 负责 Drive 客户端、仓库布局、age 加密、凭证；任务在 `workflows/gdrive_{backup,backup_slave,restore}.go`）：
+  - Drive 布局：根目录（`ocr_kind=root`）下有 `blobs/<前两位>/<blob名>` 和 `manifests/<时间>.jsonl.gz[.age]`，所有文件带 `ocr_root=<根目录ID>`。blob 名称在明文模式下是 sha256；加密模式下是由私钥派生的 HMAC，因此换密钥等于换一个命名空间。权限范围只有 `drive.file`。
+  - 每次运行都完整遍历选定策略（LB 展开为子策略）中、位于“我的文件”下的文件，不使用时间水位。选中条件是主实体已完成上传（`upload_session_id` 为空）；仍在上传中的计入 pending，下次运行时自然会被选中。回收站中的文件不备份。
+  - sha256 从上一份同密钥快照中按实体 ID 复用（实体内容不可变）。Drive 上已有同名 blob 时不上传。失败或 pending 的文件沿用上一份快照中的条目，前提是对应 blob 仍然存在，这样连续失败超过保留期也不会丢掉旧备份。
+  - 从机策略（`remote`）的实体写入本地队列文件，按批派发 `slave_gdrive_backup` 从机任务。从机通过主机的 `/slave/credential/cred_backup_gdrive` 拿 access token，直接读取本地文件、上传到 Drive，主机不经手文件内容。age 私钥和实体解密密钥随任务状态下发给从机，所以主从之间应使用 HTTPS。从机任务丢失（比如从机重启）后会重派，最多 3 次。
+  - 清理顺序：先上传新快照，再删除早于保留期的快照（最新一份始终保留），最后删除不被任何保留快照引用的 blob。如果有恢复任务正在执行，或者任一保留快照无法读取（例如用其他密钥加密），就跳过 blob 清理。
+  - 恢复使用目标用户自己的 FileManager 写入（容量和策略按目标用户计算）。同名文件跳过不覆盖。读到流末尾时校验 sha256，不一致则让上传失败。
+  - 同一时间只允许一个备份任务（`GDriveTaskPending`）。`crontab.Start` 可以重复调用；修改 `cron_gdrive_backup` 后由设置后处理器重建 cron，立即生效。
 
 ### 3.5 新增与改动的 API
-`PATCH /file/policy {uri, policy_id}`（`policy_id` 传 `""` 表示改回继承）、`GET /user/setting/policies`（LB 策略带 `children`/`weight`）、`POST /workflow/relocate {src[], dst_policy_id}`、`GET /workflow/nodes?capability=`；压缩、解压、离线下载接口新增可选参数 `node_id`；`extended_info.storage_policy_inherited`；`/site/ping` 只返回版本号。
+`PATCH /file/policy {uri, policy_id}`（`policy_id` 传 `""` 表示改回继承）、`GET /user/setting/policies`（LB 策略带 `children`/`weight`）、`POST /workflow/relocate {src[], dst_policy_id}`、`GET /workflow/nodes?capability=`；压缩、解压、离线下载接口新增可选参数 `node_id`；`extended_info.storage_policy_inherited`；`/site/ping` 只返回版本号。管理员备份接口位于 `/admin/backup/*`：`GET status`、`POST oauth/signin`、`POST oauth/callback {code,state}`、`DELETE oauth`、`POST key`、`POST run`、`GET snapshots`、`POST snapshots/browse {snapshot_id, uid?, path?}`、`POST restore {snapshot_id, items[{uid,path}], target_uid?, target_dir}`。前端回调页是 `/admin/backup/oauth`；上游遗留的死路由 `/callback/googledrive/auth` 已删除。
 
 ### 3.6 官方桌面客户端契约（`cloudreve/desktop`，没有 Pro 门控）
 - **版本**：`/site/ping` 返回的版本必须 ≥ 4.12.0，并且只能是纯数字点分格式（客户端按 `.` 切分后逐段比较数字），**不要**加 `-xxx` 之类的后缀。
@@ -99,8 +110,8 @@ git merge upstream/master
 注意事项：
 - **版本号和迁移补丁（最容易出错）**：
   - 机制：只有当库里没有 `db_version_<BackendVersion>` 这一行时才会跑迁移；补丁只在“已应用的最高版本 < 补丁 EndVersion”时执行。
-  - 风险：如果上游之后发布的版本 ≤ 本分支已部署的版本（当前 4.19.2），上游补丁的 EndVersion 也会 ≤ 本分支库里记录的版本，**这些补丁在本分支已升级过的库上会被跳过**。
-  - 规则：合并上游版本 X 后，把 `BackendVersion` 设为大于 X、也大于本分支任何已发布版本的纯数字版本，比如上游发布 4.19.2 后，本分支改用 4.19.3。`constants.go` 冲突时保留我方的值，再按这条规则改。逐个审计上游新增的补丁：EndVersion ≤ 本分支已部署版本的，在本分支已升级的库上不会执行，要先确认该补丁在这些库上是否必要、能否安全重复执行，再决定把 EndVersion 提到新版本，或另写一个适配本分支的新补丁。
+  - 风险：如果上游之后发布的版本 ≤ 本分支已部署的版本（当前 4.19.3），上游补丁的 EndVersion 也会 ≤ 本分支库里记录的版本，**这些补丁在本分支已升级过的库上会被跳过**。
+  - 规则：合并上游版本 X 后，把 `BackendVersion` 设为大于 X、也大于本分支任何已发布版本的纯数字版本，比如上游发布 4.19.3 后，本分支改用 4.19.4。`constants.go` 冲突时保留我方的值，再按这条规则改。逐个审计上游新增的补丁：EndVersion ≤ 本分支已部署版本的，在本分支已升级的库上不会执行，要先确认该补丁在这些库上是否必要、能否安全重复执行，再决定把 EndVersion 提到新版本，或另写一个适配本分支的新补丁。
   - **禁止上调本分支已发布补丁的 EndVersion**，尤其是 `clear_folder_storage_policy`。`applyPatches` 只比较“库中记录的最高版本”和 EndVersion，不记录哪些补丁已经跑过。把它提到新版本，会让已部署的库重新执行 `ClearStoragePolicies`，清掉用户真实的目录挂载。已发布补丁保持原来的边界；需要新的数据调整时另写新补丁。
   - 前端 `package.json` 的版本由打包脚本写入，要和后端版本一致。
 - **Pro 残留**：上游一直在社区版里留 Pro 占位（`pro: true`、`ProDialog`、`checked={false}` 的死开关、新的 `_CommunityPlaceholder` 位、指向不存在 Pro 组件的 import）。每次同步后都要检查：上游新出现的 Pro 入口，要么在本分支实现，要么删掉，不能只留着显示。
@@ -124,3 +135,7 @@ git merge upstream/master
 - 只 `git add <明确路径>`。多个 agent 同时在一个工作区工作时，曾经出现过 `git apply --cached --recount` 把 hunk 应用到错误函数的事故（`api.ts` 的 `bypassSnackbar`）。拆分 hunk 提交后，要用 `git show HEAD -- <file>` 复核落点。
 - 新代码的注释用中文。复用现有模式，不要建立第二套约定。
 - 已知遗留：WebDAV 上传超额不会发配额邮件；分享失效后，用户组默认固定的那一项仍会显示；管理员在他人空间打开挂载策略对话框时，列出的是管理员自己组的可用策略（后端会校验，越权会被拒绝）。
+- 已知遗留（Google Drive 备份）：
+  - 恢复时单个文件下载中断不会续传，整个文件记为失败，需要重新发起恢复。
+  - 首次全量备份受 Google 每账号每天 750 GB 的上传限额约束；超限的文件记为失败，下次运行时重试。
+  - 上游 `SetSetting` 按处理器的函数类型名去重，所有处理器的类型名都相同，所以一次提交里即使涉及多种前置/后置处理器，也只会执行其中一个。备份页签只提交自己的设置项，不受影响；其他页签混合提交时可能漏执行处理器。

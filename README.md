@@ -64,9 +64,10 @@ This is a personal fork of Cloudreve Community Edition v4 (backend [Lynricsy/Ope
   - Folder direct links (`/f/<id>/<folder>/<relative path>`, redirected direct links required);
   - Admins can open and edit users' files from the dashboard (`cloudreve://<uid>@my/`);
   - Per-group allowed node whitelist and user-selected processing node for archive/extract/remote download tasks (`GET /api/v4/workflow/nodes`);
-  - Group default pinned shares, `user` custom property type, storage quota exceeded email.
+  - Group default pinned shares, `user` custom property type, storage quota exceeded email;
+  - Google Drive backup (Dashboard → Settings → Backup): daily incremental upload of the files in selected storage policies to the admin's Google Drive, deduplicated by SHA-256; snapshots are kept for 7 days by default and files/folders can be restored to any user; optional age encryption (the key is a single `AGE-SECRET-KEY-1…` string you can keep in 1Password, decryptable offline with `age -d`); files on slave storage policies are uploaded by the slave node directly, not through the master. Requires your own Google OAuth client (`drive.file` scope) with the consent screen published to production, otherwise refresh tokens expire after 7 days.
 - Compatible with the official desktop client [cloudreve/desktop](https://github.com/cloudreve/desktop) (OAuth + PKCE, SSE file events, upload credentials never expose a load-balance policy).
-- Based on upstream release `4.19.1`; this fork reports version `4.19.2` (upstream source keeps a stale default version and injects the real one from the git tag at release). Upgrading from upstream runs the `clear_folder_storage_policy` database patch once.
+- Based on upstream release `4.19.1`; this fork reports version `4.19.3` (upstream source keeps a stale default version and injects the real one from the git tag at release). Upgrading from upstream runs the `clear_folder_storage_policy` database patch once.
 - Docker images are published to GHCR by GitHub Actions: `ghcr.io/lynricsy/opencloudreve:latest` (release tags) and `:edge` (latest `master`), for `linux/amd64` and `linux/arm64`. The bundled `docker-compose.yml` uses this image.
 
 ## :hammer_and_wrench: Deploy
