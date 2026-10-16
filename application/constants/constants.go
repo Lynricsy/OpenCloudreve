@@ -3,7 +3,7 @@ package constants
 // These values will be injected at build time, DO NOT EDIT.
 
 // BackendVersion 当前后端版本号
-var BackendVersion = "4.19.3"
+var BackendVersion = "4.19.4"
 
 // LastCommit 最后commit id
 var LastCommit = "000000"
