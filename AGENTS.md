@@ -82,6 +82,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
   - 清理顺序：先上传新快照，再删除早于保留期的快照（最新一份始终保留），最后删除不被任何保留快照引用的 blob。如果有恢复任务正在执行，或者任一保留快照无法读取（例如用其他密钥加密），就跳过 blob 清理。
   - 恢复使用目标用户自己的 FileManager 写入（容量和策略按目标用户计算）。同名文件跳过不覆盖。读到流末尾时校验 sha256，不一致则让上传失败。
   - 同一时间只允许一个备份任务（`GDriveTaskPending`）。`crontab.Start` 可以重复调用；修改 `cron_gdrive_backup` 后由设置后处理器重建 cron，立即生效。
+  - 运行记录：两种任务的私有状态都带有 `events`（`{t,l,c,p}`，最多 500 条，超出后丢弃最旧的并累计 `events_dropped`），备份任务还记录 `trigger`（`cron`/`manual`，同时写入 summary）。前端“备份 → 运行记录”页签通过现有的 `/admin/queue` 接口读取，按 `backup.events.<code>` 翻译，并用 `started`/`scan_done`/`manifest_started`/`snapshot_uploaded`/`finished` 推算阶段时间线。新增或改名事件 code 时，前端三种语言的文案要同步改。`task_failed` 只在任务最终失败时由 `OnError` 写入，可重试的错误不记录。
 
 ### 3.5 新增与改动的 API
 `PATCH /file/policy {uri, policy_id}`（`policy_id` 传 `""` 表示改回继承）、`GET /user/setting/policies`（LB 策略带 `children`/`weight`）、`POST /workflow/relocate {src[], dst_policy_id}`、`GET /workflow/nodes?capability=`；压缩、解压、离线下载接口新增可选参数 `node_id`；`extended_info.storage_policy_inherited`；`/site/ping` 只返回版本号。管理员备份接口位于 `/admin/backup/*`：`GET status`、`POST oauth/signin`、`POST oauth/callback {code,state}`、`DELETE oauth`、`POST key`、`POST run`、`GET snapshots`、`POST snapshots/browse {snapshot_id, uid?, path?}`、`POST restore {snapshot_id, items[{uid,path}], target_uid?, target_dir}`。前端页面是后台侧边栏的“备份”（`/admin/backup`，组件在 `Admin/Backup/`，设置项仍经 `SettingsWrapper` 读写），回调页是 `/admin/backup/oauth`；上游遗留的死路由 `/callback/googledrive/auth` 已删除。

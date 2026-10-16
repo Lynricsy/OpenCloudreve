@@ -66,7 +66,7 @@
   - 管理员在后台直接打开并读写用户文件（`cloudreve://<uid>@my/`）；
   - 用户组可用节点白名单，用户创建压缩/解压/离线下载任务时可选择节点（`GET /api/v4/workflow/nodes`）；
   - 用户组默认固定分享；自定义属性 `user` 类型；存储配额超出邮件通知；
-  - Google Drive 备份（后台侧边栏“备份”）：每天把选定存储策略中的文件增量上传到管理员登录的 Google Drive，按内容 SHA-256 去重；快照默认保留 7 天，可浏览快照并把文件/目录恢复到任意用户；可选 age 加密（密钥是一串 `AGE-SECRET-KEY-1…`，可存入 1Password，离线可用 `age -d` 解密）；从机策略的文件由从机直接上传，不经过主机。需要自建 Google OAuth 客户端（`drive.file` 权限）并把同意屏幕发布为正式版，否则刷新令牌 7 天过期。
+  - Google Drive 备份（后台侧边栏“备份”）：每天把选定存储策略中的文件增量上传到管理员登录的 Google Drive，按内容 SHA-256 去重；快照默认保留 7 天，可浏览快照并把文件/目录恢复到任意用户；可选 age 加密（密钥是一串 `AGE-SECRET-KEY-1…`，可存入 1Password，离线可用 `age -d` 解密）；从机策略的文件由从机直接上传，不经过主机；“运行记录”页签可查看每次备份/恢复的阶段时间线、事件日志、从机批次和失败文件。需要自建 Google OAuth 客户端（`drive.file` 权限）并把同意屏幕发布为正式版，否则刷新令牌 7 天过期。
 - 兼容官方桌面客户端 [cloudreve/desktop](https://github.com/cloudreve/desktop)（OAuth + PKCE、SSE 文件事件、上传凭证永不返回负载均衡策略）。
 - 基于上游发布版 `4.19.1`，本分支版本号为 `4.19.3`（上游源码里的版本号是过期的默认值，正式发布时按 git tag 注入）。从上游版本升级时会自动执行一次数据库补丁 `clear_folder_storage_policy`。
 - Docker 镜像由 GitHub Actions 发布到 GHCR：`ghcr.io/lynricsy/opencloudreve:latest`（版本 tag）与 `:edge`（`master` 最新提交），支持 `linux/amd64` 与 `linux/arm64`。仓库自带的 `docker-compose.yml` 已改用该镜像。
