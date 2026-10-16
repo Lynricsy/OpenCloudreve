@@ -614,8 +614,9 @@ var patches = []Patch{
 	},
 	{
 		// 目录的 storage_policy_files 现用于表示"显式挂载的存储策略"，清除历史版本遗留在目录上的值，使其回到继承状态。
+		// 本分支基于上游 4.19.1，EndVersion 必须高于上游已发布版本，从上游库升级时才会执行一次；已发布后不得再上调。
 		Name:       "clear_folder_storage_policy",
-		EndVersion: "4.14.1",
+		EndVersion: "4.19.2",
 		Func: func(l logging.Logger, client *ent.Client, ctx context.Context) error {
 			if err := client.File.Update().
 				Where(file.Type(int(types.FileTypeFolder)), file.StoragePolicyFilesNotNil()).
