@@ -53,6 +53,22 @@
 - :rocket: All-in-One 打包，开箱即用
 - 🌈 ... ...
 
+## :fox_face: 关于本分支（OpenCloudreve）
+
+本仓库是 Cloudreve 社区版 v4 的个人分支（后端 [Lynricsy/OpenCloudreve](https://github.com/Lynricsy/OpenCloudreve)，前端子模块 [Lynricsy/OpenCloudreve-frontend](https://github.com/Lynricsy/OpenCloudreve-frontend)），原则是“界面上显示的功能都能用”：
+
+- 移除全部 Pro 标识、升级推销与无法使用的付费功能壳（支付/商品/积分、礼品码、事件审计、举报、第三方登录、公告、提升匿名用户权限等）。
+- 在社区版基础上自研实现：
+  - 用户组多存储策略（默认策略 + 可选策略），用户可为目录挂载存储策略（`PATCH /api/v4/file/policy`、`GET /api/v4/user/setting/policies`）；
+  - 负载均衡存储策略（按权重在子策略间分配，同一文件的新版本保持在原子策略）；
+  - 存储策略转移任务（`POST /api/v4/workflow/relocate`，可恢复，跳过加密实体）；
+  - 目录直链（`/f/<id>/<目录名>/<相对路径>`，需开启重定向直链）；
+  - 管理员在后台直接打开并读写用户文件（`cloudreve://<uid>@my/`）；
+  - 用户组可用节点白名单，用户创建压缩/解压/离线下载任务时可选择节点（`GET /api/v4/workflow/nodes`）；
+  - 用户组默认固定分享；自定义属性 `user` 类型；存储配额超出邮件通知。
+- 兼容官方桌面客户端 [cloudreve/desktop](https://github.com/cloudreve/desktop)（OAuth + PKCE、SSE 文件事件、上传凭证永不返回负载均衡策略）。
+- 版本号为 `4.14.1`；从 4.14.0 升级时会自动执行数据库补丁 `clear_folder_storage_policy`。
+
 ## :hammer_and_wrench: 部署
 
 你可以参考 [快速开始](https://docs.cloudreve.org/overview/quickstart) 启动一个本地实例进行体验、测试。

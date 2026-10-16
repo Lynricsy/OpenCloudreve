@@ -52,6 +52,22 @@
 - :rocket: All-in-one packaging, with all features out of the box.
 - 🌈 ... ...
 
+## :fox_face: About this fork (OpenCloudreve)
+
+This is a personal fork of Cloudreve Community Edition v4 (backend [Lynricsy/OpenCloudreve](https://github.com/Lynricsy/OpenCloudreve), frontend submodule [Lynricsy/OpenCloudreve-frontend](https://github.com/Lynricsy/OpenCloudreve-frontend)). Every feature shown in the UI works:
+
+- All Pro badges, upgrade prompts and unusable paid-only shells are removed (payments/products/credits, gift codes, audit events, abuse reports, third-party sign-in, announcements, anonymous permission escalation, etc.).
+- Implemented on top of the community edition:
+  - Multiple storage policies per group (default + extra), and per-folder policy mounting (`PATCH /api/v4/file/policy`, `GET /api/v4/user/setting/policies`);
+  - Weighted load-balance storage policy (new versions of a file stay on the same child policy);
+  - Resumable storage policy relocation task (`POST /api/v4/workflow/relocate`, encrypted entities are skipped);
+  - Folder direct links (`/f/<id>/<folder>/<relative path>`, redirected direct links required);
+  - Admins can open and edit users' files from the dashboard (`cloudreve://<uid>@my/`);
+  - Per-group allowed node whitelist and user-selected processing node for archive/extract/remote download tasks (`GET /api/v4/workflow/nodes`);
+  - Group default pinned shares, `user` custom property type, storage quota exceeded email.
+- Compatible with the official desktop client [cloudreve/desktop](https://github.com/cloudreve/desktop) (OAuth + PKCE, SSE file events, upload credentials never expose a load-balance policy).
+- Version `4.14.1`; upgrading from 4.14.0 runs the `clear_folder_storage_policy` database patch automatically.
+
 ## :hammer_and_wrench: Deploy
 
 To deploy Cloudreve, you can refer to [Getting started](https://docs.cloudreve.org/overview/quickstart) for a quick local deployment to test.
