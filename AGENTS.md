@@ -84,7 +84,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
   - 同一时间只允许一个备份任务（`GDriveTaskPending`）。`crontab.Start` 可以重复调用；修改 `cron_gdrive_backup` 后由设置后处理器重建 cron，立即生效。
 
 ### 3.5 新增与改动的 API
-`PATCH /file/policy {uri, policy_id}`（`policy_id` 传 `""` 表示改回继承）、`GET /user/setting/policies`（LB 策略带 `children`/`weight`）、`POST /workflow/relocate {src[], dst_policy_id}`、`GET /workflow/nodes?capability=`；压缩、解压、离线下载接口新增可选参数 `node_id`；`extended_info.storage_policy_inherited`；`/site/ping` 只返回版本号。管理员备份接口位于 `/admin/backup/*`：`GET status`、`POST oauth/signin`、`POST oauth/callback {code,state}`、`DELETE oauth`、`POST key`、`POST run`、`GET snapshots`、`POST snapshots/browse {snapshot_id, uid?, path?}`、`POST restore {snapshot_id, items[{uid,path}], target_uid?, target_dir}`。前端回调页是 `/admin/backup/oauth`；上游遗留的死路由 `/callback/googledrive/auth` 已删除。
+`PATCH /file/policy {uri, policy_id}`（`policy_id` 传 `""` 表示改回继承）、`GET /user/setting/policies`（LB 策略带 `children`/`weight`）、`POST /workflow/relocate {src[], dst_policy_id}`、`GET /workflow/nodes?capability=`；压缩、解压、离线下载接口新增可选参数 `node_id`；`extended_info.storage_policy_inherited`；`/site/ping` 只返回版本号。管理员备份接口位于 `/admin/backup/*`：`GET status`、`POST oauth/signin`、`POST oauth/callback {code,state}`、`DELETE oauth`、`POST key`、`POST run`、`GET snapshots`、`POST snapshots/browse {snapshot_id, uid?, path?}`、`POST restore {snapshot_id, items[{uid,path}], target_uid?, target_dir}`。前端页面是后台侧边栏的“备份”（`/admin/backup`，组件在 `Admin/Backup/`，设置项仍经 `SettingsWrapper` 读写），回调页是 `/admin/backup/oauth`；上游遗留的死路由 `/callback/googledrive/auth` 已删除。
 
 ### 3.6 官方桌面客户端契约（`cloudreve/desktop`，没有 Pro 门控）
 - **版本**：`/site/ping` 返回的版本必须 ≥ 4.12.0，并且只能是纯数字点分格式（客户端按 `.` 切分后逐段比较数字），**不要**加 `-xxx` 之类的后缀。
@@ -138,4 +138,5 @@ git merge upstream/master
 - 已知遗留（Google Drive 备份）：
   - 恢复时单个文件下载中断不会续传，整个文件记为失败，需要重新发起恢复。
   - 首次全量备份受 Google 每账号每天 750 GB 的上传限额约束；超限的文件记为失败，下次运行时重试。
-  - 上游 `SetSetting` 按处理器的函数类型名去重，所有处理器的类型名都相同，所以一次提交里即使涉及多种前置/后置处理器，也只会执行其中一个。备份页签只提交自己的设置项，不受影响；其他页签混合提交时可能漏执行处理器。
+  - 上游 `SetSetting` 按处理器的函数类型名去重，所有处理器的类型名都相同，所以一次提交里即使涉及多种前置/后置处理器，也只会执行其中一个。备份页面只提交自己的设置项，不受影响；其他设置页签混合提交时可能漏执行处理器。
+- 语言包缓存：前端把语言包缓存在 localStorage，缓存版本是构建时 `public/locales` 的内容哈希（`vite.config.ts` 的 `__LOCALES_HASH__`）。不要去掉这个版本，否则升级后新增的文案会显示成键名，`returnObjects` 数组还会让页面崩溃。
