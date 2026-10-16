@@ -674,7 +674,8 @@ func (s *GetFileInfoService) Get(c *gin.Context) (*FileResponse, error) {
 	return BuildFileResponse(c, user, file, dep.HashIDEncoder(), nil), nil
 }
 
-func RedirectDirectLink(c *gin.Context, name string, download bool) error {
+// RedirectDirectLink 重定向直链到实体下载地址；subPath 为目录直链下已解码的相对路径，文件直链为空。
+func RedirectDirectLink(c *gin.Context, name, subPath string, download bool) error {
 	dep := dependency.FromContext(c)
 	settings := dep.SettingProvider()
 
@@ -693,7 +694,7 @@ func RedirectDirectLink(c *gin.Context, name string, download bool) error {
 
 	// Request entity URL
 	expire := time.Now().Add(settings.EntityUrlValidDuration(c))
-	res, earliestExpire, err := m.GetUrlForRedirectedDirectLink(c, dl,
+	res, earliestExpire, err := m.GetUrlForRedirectedDirectLink(c, dl, subPath,
 		fs.WithUrlExpire(&expire),
 		fs.WithIsDownload(download),
 	)

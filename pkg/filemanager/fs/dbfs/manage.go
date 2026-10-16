@@ -711,6 +711,14 @@ func (f *DBFS) GetFileFromDirectLink(ctx context.Context, dl *ent.DirectLink) (f
 		return nil, serializer.NewError(serializer.CodeNotFound, "direct link not found", err)
 	}
 
+	// 补全根目录 URI，使目录直链可据此解析子路径
+	rootUri := newMyUri()
+	if owner.ID != f.user.ID {
+		rootUri = newMyIDUri(hashid.EncodeUserID(f.hasher, owner.ID))
+	}
+	root.Path[pathIndexRoot] = rootUri
+	root.Path[pathIndexUser] = rootUri
+
 	return file, nil
 }
 

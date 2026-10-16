@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"strings"
+
 	"github.com/cloudreve/Cloudreve/v4/pkg/request"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 	"github.com/cloudreve/Cloudreve/v4/service/explorer"
@@ -100,11 +102,12 @@ func ExtractArchive(c *gin.Context) {
 	}
 }
 
-// AnonymousPermLink 文件中转后的永久直链接
+// AnonymousPermLink 文件中转后的永久直链接；目录直链通过 *path 携带目录内相对路径
 func AnonymousPermLink(download bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		name := c.Param("name")
-		if err := explorer.RedirectDirectLink(c, name, download); err != nil {
+		subPath := strings.TrimPrefix(c.Param("path"), "/")
+		if err := explorer.RedirectDirectLink(c, name, subPath, download); err != nil {
 			c.JSON(404, serializer.Err(c, err))
 			c.Abort()
 			return

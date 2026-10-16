@@ -271,7 +271,7 @@ const (
 	GroupPermissionRedirectedSource // not used
 	GroupPermissionAdvanceDelete
 	GroupPermission_CommunityPlaceholder3
-	GroupPermission_CommunityPlaceholder4
+	GroupPermissionFolderDirectLink
 	GroupPermissionSetExplicitUser_placeholder
 	GroupPermissionIgnoreFileOwnership // not used
 	GroupPermissionUniqueRedirectDirectLink

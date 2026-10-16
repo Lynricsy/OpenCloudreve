@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/ent"
@@ -23,8 +24,9 @@ type (
 	EntityManagement interface {
 		// GetEntityUrls gets download urls of given entities, return URLs and the earliest expiry time
 		GetEntityUrls(ctx context.Context, args []GetEntityUrlArgs, opts ...fs.Option) ([]EntityUrl, *time.Time, error)
-		// GetUrlForRedirectedDirectLink gets redirected direct download link of given direct link
-		GetUrlForRedirectedDirectLink(ctx context.Context, dl *ent.DirectLink, opts ...fs.Option) (string, *time.Time, error)
+		// GetUrlForRedirectedDirectLink gets redirected direct download link of given direct link.
+		// subPath is the decoded relative path under a folder direct link, empty for file direct links.
+		GetUrlForRedirectedDirectLink(ctx context.Context, dl *ent.DirectLink, subPath string, opts ...fs.Option) (string, *time.Time, error)
 		// GetDirectLink gets permanent direct download link of given files
 		GetDirectLink(ctx context.Context, urls ...*fs.URI) ([]DirectLink, error)
 		// GetEntitySource gets source of given entity
@@ -81,19 +83,22 @@ func (m *manager) GetDirectLink(ctx context.Context, urls ...*fs.URI) ([]DirectL
 		}
 
 		if file.Type() != types.FileTypeFile {
-			ae.Add(url.String(), fs.ErrEntityNotExist)
-			continue
-		}
+			// 目录仅支持重定向型直链，且需用户组开启目录直链权限；根目录不可生成直链
+			if file.Type() != types.FileTypeFolder || !useRedirect || file.Name() == "" ||
+				!m.user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionFolderDirectLink)) {
+				ae.Add(url.String(), fs.ErrEntityNotExist)
+				continue
+			}
+		} else {
+			if file.PrimaryEntity() == nil {
+				ae.Add(url.String(), fs.ErrEntityNotExist)
+				continue
+			}
 
-		target := file.PrimaryEntity()
-		if target == nil {
-			ae.Add(url.String(), fs.ErrEntityNotExist)
-			continue
-		}
-
-		// Hooks for entity download
-		if err := m.fs.ExecuteNavigatorHooks(ctx, fs.HookTypeBeforeDownload, file); err != nil {
-			m.l.Warning("Failed to execute navigator hooks: %s", err)
+			// Hooks for entity download
+			if err := m.fs.ExecuteNavigatorHooks(ctx, fs.HookTypeBeforeDownload, file); err != nil {
+				m.l.Warning("Failed to execute navigator hooks: %s", err)
+			}
 		}
 
 		if useRedirect {
@@ -112,13 +117,13 @@ func (m *manager) GetDirectLink(ctx context.Context, urls ...*fs.URI) ([]DirectL
 			})
 		} else {
 			// Use direct source
-			policy, d, err := m.getEntityPolicyDriver(ctx, target, nil)
+			policy, d, err := m.getEntityPolicyDriver(ctx, file.PrimaryEntity(), nil)
 			if err != nil {
 				ae.Add(url.String(), err)
 				continue
 			}
 
-			source := entitysource.NewEntitySource(target, d, policy, m.auth, m.settings, m.hasher, m.dep.RequestClient(),
+			source := entitysource.NewEntitySource(file.PrimaryEntity(), d, policy, m.auth, m.settings, m.hasher, m.dep.RequestClient(),
 				m.l, m.config, m.dep.MimeDetector(ctx), m.dep.EncryptorFactory(ctx))
 			sourceUrl, err := source.Url(ctx,
 				entitysource.WithSpeedLimit(int64(m.user.Edges.Group.SpeedLimit)),
@@ -140,7 +145,7 @@ func (m *manager) GetDirectLink(ctx context.Context, urls ...*fs.URI) ([]DirectL
 	return res, ae.Aggregate()
 }
 
-func (m *manager) GetUrlForRedirectedDirectLink(ctx context.Context, dl *ent.DirectLink, opts ...fs.Option) (string, *time.Time, error) {
+func (m *manager) GetUrlForRedirectedDirectLink(ctx context.Context, dl *ent.DirectLink, subPath string, opts ...fs.Option) (string, *time.Time, error) {
 	o := newOption()
 	for _, opt := range opts {
 		opt.Apply(o)
@@ -151,8 +156,50 @@ func (m *manager) GetUrlForRedirectedDirectLink(ctx context.Context, dl *ent.Dir
 		return "", nil, err
 	}
 
+	displayName := dl.Name
+	if file.Type() == types.FileTypeFolder {
+		// 目录直链：必须携带子路径，且所有者用户组仍需具备重定向直链与目录直链权限
+		group := m.user.Edges.Group
+		if subPath == "" || group == nil || !group.Settings.RedirectedSource ||
+			!group.Permissions.Enabled(int(types.GroupPermissionFolderDirectLink)) {
+			return "", nil, fs.ErrDirectLinkInvalid
+		}
+
+		elements := strings.Split(subPath, fs.Separator)
+		for _, elem := range elements {
+			if elem == "" || elem == "." || elem == ".." {
+				return "", nil, fs.ErrDirectLinkInvalid
+			}
+		}
+
+		folderUri := file.Uri(false)
+		if folderUri == nil {
+			return "", nil, fs.ErrDirectLinkInvalid
+		}
+
+		child, err := m.fs.Get(ctx, folderUri.Join(elements...),
+			dbfs.WithFileEntities(),
+			dbfs.WithRequiredCapabilities(dbfs.NavigatorCapabilityDownloadFile),
+		)
+		if err != nil {
+			return "", nil, fs.ErrDirectLinkInvalid.WithError(err)
+		}
+
+		if child.Type() != types.FileTypeFile {
+			return "", nil, fs.ErrDirectLinkInvalid
+		}
+
+		file = child
+		displayName = child.Name()
+	} else if subPath != "" {
+		return "", nil, fs.ErrDirectLinkInvalid
+	}
+
 	// Find primary entity
 	primaryEntity := file.PrimaryEntity()
+	if primaryEntity == nil {
+		return "", nil, fs.ErrEntityNotExist
+	}
 
 	// Generate url
 	var (
@@ -161,7 +208,7 @@ func (m *manager) GetUrlForRedirectedDirectLink(ctx context.Context, dl *ent.Dir
 	)
 
 	// Try to read from cache.
-	cacheKey := entityUrlCacheKey(primaryEntity.ID(), int64(dl.Speed), dl.Name, o.IsDownload,
+	cacheKey := entityUrlCacheKey(primaryEntity.ID(), int64(dl.Speed), displayName, o.IsDownload,
 		m.settings.SiteURL(ctx).String())
 	if cached, ok := m.kv.Get(cacheKey); ok {
 		cachedItem := cached.(EntityUrlCache)
@@ -180,7 +227,7 @@ func (m *manager) GetUrlForRedirectedDirectLink(ctx context.Context, dl *ent.Dir
 			entitysource.WithExpire(o.Expire),
 			entitysource.WithDownload(o.IsDownload),
 			entitysource.WithSpeedLimit(int64(dl.Speed)),
-			entitysource.WithDisplayName(dl.Name),
+			entitysource.WithDisplayName(displayName),
 		)
 		if err != nil {
 			return "", nil, err

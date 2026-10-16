@@ -252,6 +252,13 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 			source.GET("d/:id/:name",
 				middleware.HashID(hashid.SourceLinkID),
 				controllers.AnonymousPermLink(true))
+			// 目录直链：*path 为目录内文件的相对路径
+			source.GET(":id/:name/*path",
+				middleware.HashID(hashid.SourceLinkID),
+				controllers.AnonymousPermLink(false))
+			source.GET("d/:id/:name/*path",
+				middleware.HashID(hashid.SourceLinkID),
+				controllers.AnonymousPermLink(true))
 		}
 
 		shareShort := r.Group("s")
