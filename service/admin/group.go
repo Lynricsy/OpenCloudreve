@@ -165,6 +165,7 @@ func (s *UpsertGroupService) Update(c *gin.Context) (*GetGroupResponse, error) {
 		return nil, serializer.NewError(serializer.CodeParamErr, "Initial admin group have to be admin", nil)
 	}
 
+	sanitizeAvailablePolicies(c, dep, s.Group)
 	group, err := groupClient.Upsert(c, s.Group)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeDBError, "Failed to update group", err)
@@ -182,6 +183,7 @@ func (s *UpsertGroupService) Create(c *gin.Context) (*GetGroupResponse, error) {
 		return nil, serializer.NewError(serializer.CodeParamErr, "ID must be 0", nil)
 	}
 
+	sanitizeAvailablePolicies(c, dep, s.Group)
 	group, err := groupClient.Upsert(c, s.Group)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeDBError, "Failed to create group", err)
@@ -189,4 +191,34 @@ func (s *UpsertGroupService) Create(c *gin.Context) (*GetGroupResponse, error) {
 
 	service := &SingleGroupService{ID: group.ID}
 	return service.Get(c)
+}
+
+// sanitizeAvailablePolicies 剔除可用存储策略中与默认策略重复、重复出现或已不存在的项。
+func sanitizeAvailablePolicies(ctx context.Context, dep dependency.Dep, group *ent.Group) {
+	if group.Settings == nil || len(group.Settings.AvailablePolicies) == 0 {
+		return
+	}
+
+	defaultPolicyID := group.StoragePolicyID
+	if group.Edges.StoragePolicies != nil {
+		defaultPolicyID = group.Edges.StoragePolicies.ID
+	}
+
+	storagePolicyClient := dep.StoragePolicyClient()
+	seen := map[int]bool{defaultPolicyID: true}
+	filtered := make([]int, 0, len(group.Settings.AvailablePolicies))
+	for _, id := range group.Settings.AvailablePolicies {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+
+		if _, err := storagePolicyClient.GetPolicyByID(ctx, id); err != nil {
+			continue
+		}
+
+		filtered = append(filtered, id)
+	}
+
+	group.Settings.AvailablePolicies = filtered
 }

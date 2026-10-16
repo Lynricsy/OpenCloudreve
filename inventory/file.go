@@ -205,6 +205,8 @@ type FileClient interface {
 	SoftDelete(ctx context.Context, file *ent.File) error
 	// SetPrimaryEntity sets primary entity of a file
 	SetPrimaryEntity(ctx context.Context, file *ent.File, entity *ent.Entity) error
+	// SetStoragePolicy sets storage policy of a file. For folders, policyID <= 0 clears the mounted policy.
+	SetStoragePolicy(ctx context.Context, file *ent.File, policyID int) error
 	// UnlinkEntity unlinks an entity from a file
 	UnlinkEntity(ctx context.Context, entity *ent.Entity, file *ent.File, owner *ent.User) (StorageDiff, error)
 	// CreateDirectLink creates a direct link for a file
@@ -258,8 +260,12 @@ func (c *fileClient) GetClient() *ent.Client {
 
 func (f *fileClient) Update(ctx context.Context, file *ent.File) (*ent.File, error) {
 	q := f.client.File.UpdateOne(file).
-		SetName(file.Name).
-		SetStoragePoliciesID(file.StoragePolicyFiles)
+		SetName(file.Name)
+	if file.StoragePolicyFiles > 0 {
+		q.SetStoragePoliciesID(file.StoragePolicyFiles)
+	} else {
+		q.ClearStoragePolicies()
+	}
 
 	existingMetadata, err := f.client.Metadata.Query().Where(metadata.FileID(file.ID)).All(ctx)
 	if err != nil {
@@ -795,6 +801,17 @@ func (f *fileClient) SetPrimaryEntity(ctx context.Context, file *ent.File, entit
 	return f.client.File.UpdateOne(file).SetPrimaryEntity(entity.ID).SetSize(entity.Size).Exec(ctx)
 }
 
+func (f *fileClient) SetStoragePolicy(ctx context.Context, file *ent.File, policyID int) error {
+	q := f.client.File.UpdateOne(file)
+	if policyID > 0 {
+		q.SetStoragePoliciesID(policyID)
+	} else {
+		q.ClearStoragePolicies()
+	}
+
+	return q.Exec(ctx)
+}
+
 func (f *fileClient) CreateFile(ctx context.Context, root *ent.File, args *CreateFileParameters) (*ent.File, *ent.Entity, StorageDiff, error) {
 	var defaultEntity *ent.Entity
 	stm := f.client.File.
@@ -803,8 +820,10 @@ func (f *fileClient) CreateFile(ctx context.Context, root *ent.File, args *Creat
 		SetType(int(args.FileType)).
 		SetName(args.Name).
 		SetParent(root).
-		SetIsSymbolic(args.IsSymbolic).
-		SetStoragePoliciesID(args.StoragePolicyID)
+		SetIsSymbolic(args.IsSymbolic)
+	if args.StoragePolicyID > 0 {
+		stm.SetStoragePoliciesID(args.StoragePolicyID)
+	}
 
 	if args.EntityParameters != nil && args.EntityParameters.Importing {
 		stm.SetSize(args.EntityParameters.Size)

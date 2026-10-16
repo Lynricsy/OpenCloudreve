@@ -36,6 +36,8 @@ type (
 		MaxWalkedFiles        int                    `json:"max_walked_files,omitempty"`
 		TrashRetention        int                    `json:"trash_retention,omitempty"`
 		RedirectedSource      bool                   `json:"redirected_source,omitempty"`
+		// AvailablePolicies 除默认存储策略外，用户可额外选用的存储策略 ID
+		AvailablePolicies []int `json:"available_policies,omitempty"`
 		// AllowedNodes 用户组可用的节点 ID 白名单，为空表示允许全部节点
 		AllowedNodes []int `json:"allowed_nodes,omitempty"`
 	}

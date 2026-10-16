@@ -10,6 +10,7 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"github.com/cloudreve/Cloudreve/v4/application/constants"
 	"github.com/cloudreve/Cloudreve/v4/ent"
+	"github.com/cloudreve/Cloudreve/v4/ent/file"
 	"github.com/cloudreve/Cloudreve/v4/ent/group"
 	"github.com/cloudreve/Cloudreve/v4/ent/node"
 	"github.com/cloudreve/Cloudreve/v4/ent/oauthclient"
@@ -606,6 +607,21 @@ var patches = []Patch{
 			ctx = context.WithValue(ctx, debug.SkipDbLogging{}, true)
 			if err := client.Setting.Update().Where(setting.Name("secret_key")).SetValue(newSecretKey).Exec(ctx); err != nil {
 				return fmt.Errorf("failed to update secret_key setting: %w", err)
+			}
+
+			return nil
+		},
+	},
+	{
+		// 目录的 storage_policy_files 现用于表示"显式挂载的存储策略"，清除历史版本遗留在目录上的值，使其回到继承状态。
+		Name:       "clear_folder_storage_policy",
+		EndVersion: "4.14.1",
+		Func: func(l logging.Logger, client *ent.Client, ctx context.Context) error {
+			if err := client.File.Update().
+				Where(file.Type(int(types.FileTypeFolder)), file.StoragePolicyFilesNotNil()).
+				ClearStoragePolicies().
+				Exec(ctx); err != nil {
+				return fmt.Errorf("failed to clear folder storage policy: %w", err)
 			}
 
 			return nil

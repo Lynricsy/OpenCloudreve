@@ -10,6 +10,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/storagepolicy"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/cache"
+	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 )
 
 const (
@@ -30,6 +31,8 @@ type (
 		TxOperator
 		// GetByGroup returns the storage policies of the group.
 		GetByGroup(ctx context.Context, group *ent.Group) (*ent.StoragePolicy, error)
+		// ListAvailableByGroup returns all storage policies available to the group, with the default policy first.
+		ListAvailableByGroup(ctx context.Context, group *ent.Group) ([]*ent.StoragePolicy, error)
 		// GetPolicyByID returns the storage policy by id.
 		GetPolicyByID(ctx context.Context, id int) (*ent.StoragePolicy, error)
 		// UpdateAccessKey updates the access key of the storage policy. It also clear related cache in KV.
@@ -149,6 +152,38 @@ func (c *storagePolicyClient) GetByGroup(ctx context.Context, group *ent.Group) 
 	res, err := withStoragePolicyEagerLoading(ctx, c.client.Group.QueryStoragePolicies(group)).WithNode().First(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get storage policies: %w", err)
+	}
+
+	return res, nil
+}
+
+// ListAvailableByGroup 返回用户组可用的全部存储策略：默认策略位于首位，其后为 GroupSetting.AvailablePolicies
+// 中仍然存在的策略（去重并剔除默认策略）。无法读取的额外策略会被跳过。
+func (c *storagePolicyClient) ListAvailableByGroup(ctx context.Context, group *ent.Group) ([]*ent.StoragePolicy, error) {
+	defaultPolicy, err := c.GetByGroup(ctx, group)
+	if err != nil {
+		return nil, err
+	}
+
+	res := []*ent.StoragePolicy{defaultPolicy}
+	if group.Settings == nil {
+		return res, nil
+	}
+
+	seen := map[int]bool{defaultPolicy.ID: true}
+	for _, id := range group.Settings.AvailablePolicies {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+
+		policy, err := c.GetPolicyByID(ctx, id)
+		if err != nil {
+			logging.FromContext(ctx).Warning("Failed to get available storage policy %d of group %d: %s", id, group.ID, err)
+			continue
+		}
+
+		res = append(res, policy)
 	}
 
 	return res, nil

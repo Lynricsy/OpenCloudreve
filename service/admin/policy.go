@@ -28,6 +28,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/request"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 )
 
 // PathTestService 本地路径测试服务
@@ -80,6 +81,19 @@ func (service *SingleStoragePolicyService) Delete(c *gin.Context) error {
 	// If policy is used by groups, return error
 	if len(policy.Edges.Groups) > 0 {
 		return serializer.NewError(serializer.CodePolicyUsedByGroups, strconv.Itoa(len(policy.Edges.Groups)), nil)
+	}
+
+	// If policy is listed as available policy of any group, return error
+	groups, err := dep.GroupClient().ListAll(ctx)
+	if err != nil {
+		return serializer.NewError(serializer.CodeDBError, "Failed to list groups", err)
+	}
+
+	referencedGroups := lo.CountBy(groups, func(g *ent.Group) bool {
+		return g.Settings != nil && lo.Contains(g.Settings.AvailablePolicies, policy.ID)
+	})
+	if referencedGroups > 0 {
+		return serializer.NewError(serializer.CodePolicyUsedByGroups, strconv.Itoa(referencedGroups), nil)
 	}
 
 	used, err := dep.FileClient().IsStoragePolicyUsedByEntities(ctx, service.ID)

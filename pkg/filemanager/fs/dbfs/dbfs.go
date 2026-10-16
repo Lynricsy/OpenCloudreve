@@ -666,6 +666,8 @@ func (f *DBFS) generateEncryptMetadata(ctx context.Context, uploadRequest *fs.Up
 }
 
 // getPreferredPolicy tries to get the preferred storage policy for the given file.
+// 自 file（含自身）向上查找第一个显式挂载了存储策略、且该策略仍对所有者用户组可用的目录；
+// 若不存在则使用所有者用户组的默认存储策略。
 func (f *DBFS) getPreferredPolicy(ctx context.Context, file *File) (*ent.StoragePolicy, error) {
 	ownerGroup := file.Owner().Edges.Group
 	if ownerGroup == nil {
@@ -673,12 +675,24 @@ func (f *DBFS) getPreferredPolicy(ctx context.Context, file *File) (*ent.Storage
 	}
 
 	sc, _ := inventory.InheritTx(ctx, f.storagePolicyClient)
-	groupPolicy, err := sc.GetByGroup(ctx, ownerGroup)
+	allowed, err := sc.ListAvailableByGroup(ctx, ownerGroup)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeDBError, "Failed to get available storage policies", err)
 	}
 
-	return groupPolicy, nil
+	for _, ancestor := range file.AncestorsChain() {
+		if ancestor.Type() != types.FileTypeFolder || ancestor.Model.StoragePolicyFiles <= 0 {
+			continue
+		}
+
+		if policy, found := lo.Find(allowed, func(p *ent.StoragePolicy) bool {
+			return p.ID == ancestor.Model.StoragePolicyFiles
+		}); found {
+			return policy, nil
+		}
+	}
+
+	return allowed[0], nil
 }
 
 func (f *DBFS) getFileByPath(ctx context.Context, navigator Navigator, path *fs.URI) (*File, error) {
