@@ -92,6 +92,9 @@ func (f *DBFS) PrepareRelocate(ctx context.Context, uri *fs.URI, dst *ent.Storag
 
 		req := &fs.UploadRequest{Props: &fs.UploadProps{Uri: target.Uri(false), Size: e.Size()}}
 		savePath := generateSavePath(dst, req, owner)
+		// 文件名前加入本次生成的随机前缀，确保目标路径此前不存在任何对象：上传失败时清理该路径
+		// 只会删除本次转移写入的数据，不会误删命名规则冲突的既有对象（如固定文件名规则下的同名文件）。
+		savePath = path.Join(path.Dir(savePath), util.RandStringRunesCrypto(16)+"_"+path.Base(savePath))
 		if e.Type() == types.EntityTypeThumbnail {
 			// 与 PrepareUpload 中缩略图落在非文件主策略时的路径规则一致
 			savePath = path.Clean(util.ReplaceMagicVar(f.settingClient.ThumbEntitySuffix(ctx), fs.Separator, true, true,

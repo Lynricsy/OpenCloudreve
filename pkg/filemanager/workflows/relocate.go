@@ -3,10 +3,8 @@ package workflows
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
@@ -21,7 +19,6 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 	"github.com/cloudreve/Cloudreve/v4/pkg/queue"
-	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 	"github.com/samber/lo"
 	"golang.org/x/tools/container/intsets"
 )
@@ -297,7 +294,8 @@ func (m *RelocateTask) relocateFile(ctx context.Context, dep dependency.Dep, fm 
 }
 
 // relocateEntity 复制实体数据到目标策略，提交数据库后再删除旧物理文件。
-// 复制或提交失败时不改动数据库，并尽力删除目标策略中已写入的半成品。
+// 新路径由 PrepareRelocate 以随机前缀生成、此前必不存在，因此复制或提交失败时可以安全清理该路径；
+// 失败时不改动数据库。
 func (m *RelocateTask) relocateEntity(ctx context.Context, dep dependency.Dep, fm manager.FileManager, re *fs.RelocateEntity,
 	dst *ent.StoragePolicy, dstDriver driver.Handler) error {
 	e := re.SrcEntity
@@ -323,10 +321,7 @@ func (m *RelocateTask) relocateEntity(ctx context.Context, dep dependency.Dep, f
 	}
 
 	if err := fm.Upload(ctx, req, dst, nil); err != nil {
-		// 目标路径已存在时写入在开始前即被拒绝，此时不能删除该路径上的既有对象
-		if !isObjectExistedErr(err) {
-			m.cleanupDst(ctx, dstDriver, re.NewSavePath)
-		}
+		m.cleanupDst(ctx, dstDriver, re.NewSavePath)
 		return fmt.Errorf("failed to upload to destination: %w", err)
 	}
 
@@ -360,9 +355,20 @@ func (m *RelocateTask) cleanupDst(ctx context.Context, d driver.Handler, savePat
 	}
 }
 
-// deleteOldSource 删除实体转移前的物理文件，失败仅记录日志。
+// deleteOldSource 删除实体转移前的物理文件；若仍有其他实体指向同一物理对象（例如多次导入同一物理文件）
+// 则保留。失败仅记录日志。
 func (m *RelocateTask) deleteOldSource(ctx context.Context, dep dependency.Dep, fm manager.FileManager, e *ent.Entity) {
 	ctx = context.WithoutCancel(ctx)
+	refs, err := dep.FileClient().CountEntitiesBySource(ctx, e.StoragePolicyEntities, e.Source)
+	if err != nil {
+		m.l.Warning("Failed to check references of relocated source %q, keep it: %s", e.Source, err)
+		return
+	}
+	if refs > 0 {
+		m.l.Info("Relocated source %q is still referenced by %d entities, keep it", e.Source, refs)
+		return
+	}
+
 	srcPolicy, err := dep.StoragePolicyClient().GetPolicyByID(ctx, e.StoragePolicyEntities)
 	if err != nil {
 		m.l.Warning("Failed to get source policy %d to delete %q: %s", e.StoragePolicyEntities, e.Source, err)
@@ -380,21 +386,22 @@ func (m *RelocateTask) deleteOldSource(ctx context.Context, dep dependency.Dep, 
 	}
 }
 
-// isObjectExistedErr 判断上传是否因目标路径已存在而被拒绝。
-func isObjectExistedErr(err error) bool {
-	var appErr serializer.AppError
-	if errors.As(err, &appErr) && appErr.ErrCode() == serializer.CodeObjectExist {
-		return true
-	}
-
-	// 本机存储策略以纯文本错误报告路径冲突
-	return strings.Contains(err.Error(), "file with the same name existed")
-}
-
+// finish 结束转移。与导入任务一致，部分文件失败时任务仍为完成态并在摘要中给出失败数；
+// 若所有失败且没有任何实体转移成功，则任务以失败结束。
 func (m *RelocateTask) finish(ctx context.Context, dep dependency.Dep) (task.Status, error) {
 	_ = dep.KV().Delete(manager.EntityUrlCacheKeyPrefix)
 	m.l.Info("Relocation finished: %d entities relocated, %d skipped, %d files failed",
 		m.state.Relocated, m.state.Skipped, m.state.Failed)
+
+	if m.state.Failed > 0 && m.state.Relocated == 0 {
+		reason := ""
+		if len(m.state.Errors) > 0 {
+			reason = ", first error: " + m.state.Errors[0]
+		}
+		// 结束阶段重试不会改变结果，标记为不可重试
+		return task.StatusError, fmt.Errorf("failed to relocate all %d files%s (%w)", m.state.Failed, reason, queue.CriticalErr)
+	}
+
 	return task.StatusCompleted, nil
 }
 

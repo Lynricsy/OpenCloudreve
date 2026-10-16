@@ -213,6 +213,8 @@ type FileClient interface {
 	// RelocateEntity 将实体指向给定存储策略下的新物理路径，并更新以其为主实体的文件的存储策略。
 	// 实体自 args.Entity 加载后被修改时返回 ErrEntityRelocateConflict。调用方应在事务中执行。
 	RelocateEntity(ctx context.Context, args *RelocateEntityParameter, policyID int) error
+	// CountEntitiesBySource 统计指向给定存储策略下同一物理路径的实体数（导入同一物理文件可产生多个独立实体）。
+	CountEntitiesBySource(ctx context.Context, policyID int, source string) (int, error)
 	// UnlinkEntity unlinks an entity from a file
 	UnlinkEntity(ctx context.Context, entity *ent.Entity, file *ent.File, owner *ent.User) (StorageDiff, error)
 	// CreateDirectLink creates a direct link for a file
@@ -849,6 +851,12 @@ func (f *fileClient) RelocateEntity(ctx context.Context, args *RelocateEntityPar
 	}
 
 	return nil
+}
+
+func (f *fileClient) CountEntitiesBySource(ctx context.Context, policyID int, source string) (int, error) {
+	return f.client.Entity.Query().
+		Where(entity.StoragePolicyEntities(policyID), entity.Source(source)).
+		Count(ctx)
 }
 
 func (f *fileClient) CreateFile(ctx context.Context, root *ent.File, args *CreateFileParameters) (*ent.File, *ent.Entity, StorageDiff, error) {
