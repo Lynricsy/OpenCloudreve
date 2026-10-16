@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -64,6 +65,7 @@ type (
 		Skipped  int      `json:"skipped"`
 		Failed   int      `json:"failed"`
 		Errors   []string `json:"errors,omitempty"`
+		GDriveTaskEventLog
 	}
 
 	gdriveRestorePlanLine struct {
@@ -124,6 +126,33 @@ func NewGDriveRestoreTaskFromModel(task *ent.Task) queue.Task {
 			Task: task,
 		},
 	}
+}
+
+// event 持锁追加一条事件。
+func (m *GDriveRestoreTask) event(level, code string, params map[string]any) {
+	m.Lock()
+	m.state.add(level, code, params)
+	m.Unlock()
+}
+
+// OnError 队列在任务以错误状态结束前调用（可重试的错误不会走到这里）：记录 task_failed 事件并写回私有状态，
+// 随后的状态切换会把私有状态持久化。
+func (m *GDriveRestoreTask) OnError(err error, d time.Duration) {
+	m.Lock()
+	if m.state == nil && m.Task != nil {
+		state := &GDriveRestoreTaskState{}
+		if json.Unmarshal([]byte(m.Task.PrivateState), state) == nil {
+			m.state = state
+		}
+	}
+	if m.state != nil && m.Task != nil {
+		m.state.add(gdriveEventError, "task_failed", map[string]any{"error": err.Error()})
+		if newState, marshalErr := json.Marshal(m.state); marshalErr == nil {
+			m.Task.PrivateState = string(newState)
+		}
+	}
+	m.Unlock()
+	m.DBTask.OnError(err, d)
 }
 
 func (m *GDriveRestoreTask) Do(ctx context.Context) (task.Status, error) {
@@ -195,6 +224,15 @@ func restoreRelPath(entryPath, selected string) (string, bool) {
 
 // plan 读取快照，按选中项筛选并计算目标路径，写入本地计划文件。
 func (m *GDriveRestoreTask) plan(ctx context.Context, dep dependency.Dep) (task.Status, error) {
+	// 规划失败重试时状态已写回，事件不重复记录
+	if !slices.ContainsFunc(m.state.Events, func(e GDriveTaskEvent) bool { return e.Code == "restore_started" }) {
+		m.event(gdriveEventInfo, "restore_started", map[string]any{
+			"snapshot_id": m.state.SnapshotID,
+			"items":       len(m.state.Items),
+			"target_uid":  m.state.TargetUID,
+			"target_dir":  m.state.TargetDir,
+		})
+	}
 	if err := m.ensureEnv(ctx, dep); err != nil {
 		return task.StatusError, err
 	}
@@ -271,6 +309,7 @@ func (m *GDriveRestoreTask) plan(ctx context.Context, dep dependency.Dep) (task.
 	m.state.TempDir = tempDir
 	m.state.Total = total
 	m.state.Phase = GDriveRestorePhaseRestore
+	m.state.add(gdriveEventInfo, "restore_planned", map[string]any{"snapshot": snap.Name, "files": total})
 	m.Unlock()
 	return task.StatusProcessing, nil
 }
@@ -456,6 +495,15 @@ func (v *verifyingReader) Read(p []byte) (int, error) {
 
 func (m *GDriveRestoreTask) finish() (task.Status, error) {
 	m.l.Info("Restore finished: %d restored, %d skipped, %d failed", m.state.Restored, m.state.Skipped, m.state.Failed)
+	level := gdriveEventInfo
+	if m.state.Failed > 0 {
+		level = gdriveEventWarning
+	}
+	m.event(level, "restore_finished", map[string]any{
+		"restored": m.state.Restored,
+		"skipped":  m.state.Skipped,
+		"failed":   m.state.Failed,
+	})
 	if m.state.Failed > 0 && m.state.Restored == 0 && m.state.Skipped == 0 {
 		reason := ""
 		if len(m.state.Errors) > 0 {

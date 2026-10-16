@@ -245,7 +245,7 @@ func RunBackup(c *gin.Context) error {
 	if dep.SettingProvider().GDriveBackup(c).RefreshToken == "" {
 		return serializer.NewError(serializer.CodeParamErr, "Google Drive account is not connected", nil)
 	}
-	t, err := workflows.NewGDriveBackupTask(c, dep)
+	t, err := workflows.NewGDriveBackupTask(c, dep, workflows.GDriveBackupTriggerManual)
 	if err != nil {
 		if errors.Is(err, workflows.ErrGDriveBackupRunning) {
 			return serializer.NewError(serializer.CodeConflict, "A backup task is already running", err)

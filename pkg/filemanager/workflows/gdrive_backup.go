@@ -66,14 +66,19 @@ type (
 		Remote       map[int]*GDriveRemoteNode `json:"remote,omitempty"`
 		Stats        GDriveBackupStats         `json:"stats"`
 		Errors       []string                  `json:"errors,omitempty"`
+		// Trigger 触发方式：GDriveBackupTriggerCron 或 GDriveBackupTriggerManual；旧任务为空
+		Trigger string `json:"trigger,omitempty"`
+		GDriveTaskEventLog
 	}
 
 	// GDriveRemoteNode 某个从机的待处理队列（本地 JSONL 文件）进度。
 	GDriveRemoteNode struct {
 		// Written 已写入队列文件的字节数；Done 已处理完成（成功或失败）的偏移
-		Written  int64              `json:"written"`
-		Done     int64              `json:"done"`
-		Attempts int                `json:"attempts,omitempty"`
+		Written  int64 `json:"written"`
+		Done     int64 `json:"done"`
+		Attempts int   `json:"attempts,omitempty"`
+		// Queued 已排入队列文件的实体数
+		Queued   int64              `json:"queued,omitempty"`
 		Inflight *GDriveRemoteBatch `json:"inflight,omitempty"`
 	}
 
@@ -82,6 +87,21 @@ type (
 		SlaveTaskID int   `json:"slave_task_id"`
 		End         int64 `json:"end"`
 		PollErrors  int   `json:"poll_errors,omitempty"`
+	}
+
+	// GDriveTaskEvent 任务事件日志中的一条，前端按 code 翻译
+	GDriveTaskEvent struct {
+		Time   time.Time      `json:"t"`
+		Level  string         `json:"l"`
+		Code   string         `json:"c"`
+		Params map[string]any `json:"p,omitempty"`
+	}
+
+	// GDriveTaskEventLog 备份与恢复任务共用的事件日志，嵌入任务状态后序列化为 events 与 events_dropped。
+	GDriveTaskEventLog struct {
+		Events []GDriveTaskEvent `json:"events,omitempty"`
+		// EventsDropped 超出上限后被丢弃的最旧事件数
+		EventsDropped int `json:"events_dropped,omitempty"`
 	}
 
 	GDriveBackupStats struct {
@@ -147,6 +167,17 @@ const (
 	gdriveRemoteMaxPollErrors = 60
 	gdriveMaxErrors           = 50
 	gdriveManifestFile        = "manifest.jsonl"
+
+	// gdriveMaxEvents 事件日志最多保留的条数
+	gdriveMaxEvents = 500
+
+	gdriveEventInfo    = "info"
+	gdriveEventWarning = "warning"
+	gdriveEventError   = "error"
+
+	// 备份任务的触发方式
+	GDriveBackupTriggerCron   = "cron"
+	GDriveBackupTriggerManual = "manual"
 )
 
 // emptySha256 空文件的 sha256。空文件不需要 blob。
@@ -165,7 +196,7 @@ func cronGDriveBackup(ctx context.Context) {
 		return
 	}
 
-	t, err := NewGDriveBackupTask(ctx, dep)
+	t, err := NewGDriveBackupTask(ctx, dep, GDriveBackupTriggerCron)
 	if err != nil {
 		l.Warning("Skip scheduled Google Drive backup: %s", err)
 		return
@@ -188,7 +219,8 @@ func GDriveTaskPending(ctx context.Context, dep dependency.Dep, taskType string)
 }
 
 // NewGDriveBackupTask 创建备份任务；已有备份任务未结束时返回 ErrGDriveBackupRunning。
-func NewGDriveBackupTask(ctx context.Context, dep dependency.Dep) (queue.Task, error) {
+// trigger 为触发方式（GDriveBackupTriggerCron / GDriveBackupTriggerManual），记录在任务状态中。
+func NewGDriveBackupTask(ctx context.Context, dep dependency.Dep, trigger string) (queue.Task, error) {
 	running, err := GDriveTaskPending(ctx, dep, queue.GDriveBackupTaskType)
 	if err != nil {
 		return nil, err
@@ -196,13 +228,17 @@ func NewGDriveBackupTask(ctx context.Context, dep dependency.Dep) (queue.Task, e
 	if running {
 		return nil, ErrGDriveBackupRunning
 	}
+	stateBytes, err := json.Marshal(&GDriveBackupTaskState{Trigger: trigger})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal state: %w", err)
+	}
 
 	return &GDriveBackupTask{
 		DBTask: &queue.DBTask{
 			Task: &ent.Task{
 				Type:          queue.GDriveBackupTaskType,
 				CorrelationID: logging.CorrelationID(ctx),
-				PrivateState:  "{}",
+				PrivateState:  string(stateBytes),
 				PublicState: &types.TaskPublicState{
 					ResumeTime: time.Now().Unix() - 1,
 				},
@@ -218,6 +254,53 @@ func NewGDriveBackupTaskFromModel(task *ent.Task) queue.Task {
 			Task: task,
 		},
 	}
+}
+
+// add 追加一条事件，超过 gdriveMaxEvents 条时丢弃最旧的并累计 EventsDropped。调用方必须持有任务锁。
+func (l *GDriveTaskEventLog) add(level, code string, params map[string]any) {
+	if over := len(l.Events) - gdriveMaxEvents + 1; over > 0 {
+		l.Events = slices.Delete(l.Events, 0, over)
+		l.EventsDropped += over
+	}
+	l.Events = append(l.Events, GDriveTaskEvent{Time: time.Now(), Level: level, Code: code, Params: params})
+}
+
+// event 持锁追加一条事件。
+func (m *GDriveBackupTask) event(level, code string, params map[string]any) {
+	m.Lock()
+	m.state.add(level, code, params)
+	m.Unlock()
+}
+
+// OnError 队列在任务以错误状态结束前调用（可重试的错误不会走到这里）：记录 task_failed 事件并写回私有状态，
+// 随后的状态切换会把私有状态持久化。
+func (m *GDriveBackupTask) OnError(err error, d time.Duration) {
+	m.Lock()
+	if m.state == nil && m.Task != nil {
+		state := &GDriveBackupTaskState{}
+		if json.Unmarshal([]byte(m.Task.PrivateState), state) == nil {
+			m.state = state
+		}
+	}
+	if m.state != nil && m.Task != nil {
+		m.state.add(gdriveEventError, "task_failed", map[string]any{"error": err.Error()})
+		if newState, marshalErr := json.Marshal(m.state); marshalErr == nil {
+			m.Task.PrivateState = string(newState)
+		}
+	}
+	m.Unlock()
+	m.DBTask.OnError(err, d)
+}
+
+// nodeName 返回从机名称用于事件日志；未取得节点对象时查询数据库，查询失败返回空字符串。
+func nodeName(ctx context.Context, dep dependency.Dep, nodeID int, node cluster.Node) string {
+	if node != nil {
+		return node.Name()
+	}
+	if n, err := dep.NodeClient().GetNodeById(ctx, nodeID); err == nil {
+		return n.Name
+	}
+	return ""
 }
 
 func (m *GDriveBackupTask) Do(ctx context.Context) (task.Status, error) {
@@ -362,6 +445,12 @@ func (m *GDriveBackupTask) init(ctx context.Context, dep dependency.Dep) (task.S
 	m.state.ManifestSize = int64(len(header))
 	m.state.Remote = make(map[int]*GDriveRemoteNode)
 	m.state.Phase = GDriveBackupPhaseScan
+	m.state.add(gdriveEventInfo, "started", map[string]any{
+		"trigger":   m.state.Trigger,
+		"policies":  ids,
+		"encrypted": m.state.KeyID != backup.KeyIDPlain,
+		"key_id":    m.state.KeyID,
+	})
 	m.Unlock()
 
 	m.rt = &gdriveBackupRuntime{env: env, policies: policies}
@@ -413,6 +502,7 @@ func (m *GDriveBackupTask) ensureRuntime(ctx context.Context, dep dependency.Dep
 			blobs[name] = items[0].ID
 		}
 		rt.blobs = blobs
+		m.event(gdriveEventInfo, "blobs_listed", map[string]any{"count": len(blobs)})
 	}
 	if rt.prev == nil {
 		if err := m.loadPrevious(ctx); err != nil {
@@ -446,12 +536,15 @@ func (m *GDriveBackupTask) loadPrevious(ctx context.Context) error {
 		})
 		if err != nil {
 			m.l.Warning("Failed to read previous snapshot %q, try an older one: %s", s.Name, err)
+			m.event(gdriveEventWarning, "prev_snapshot_unreadable", map[string]any{"snapshot": s.Name, "error": err.Error()})
 			continue
 		}
 		rt.prev, rt.hashes = prev, hashes
 		m.l.Info("Loaded previous snapshot %q with %d files", s.Name, len(prev))
+		m.event(gdriveEventInfo, "prev_snapshot_loaded", map[string]any{"snapshot": s.Name, "files": len(prev)})
 		return nil
 	}
+	m.event(gdriveEventInfo, "no_prev_snapshot", nil)
 	return nil
 }
 
@@ -489,6 +582,17 @@ func (m *GDriveBackupTask) scan(ctx context.Context, dep dependency.Dep) (task.S
 		if len(files) == 0 {
 			m.Lock()
 			m.state.Phase = GDriveBackupPhaseRemote
+			var remote int64
+			for _, n := range m.state.Remote {
+				remote += n.Queued
+			}
+			s := m.state.Stats
+			m.state.add(gdriveEventInfo, "scan_done", map[string]any{
+				"files":   s.Files,
+				"size":    s.Size,
+				"pending": s.Pending,
+				"remote":  remote,
+			})
 			m.Unlock()
 			break
 		}
@@ -742,6 +846,9 @@ func (m *GDriveBackupTask) fail(entry *backup.ManifestEntry, cause error) error 
 	m.state.Stats.Failed++
 	if len(m.state.Errors) < gdriveMaxErrors {
 		m.state.Errors = append(m.state.Errors, fmt.Sprintf("[%s] %s: %s", entry.Owner, entry.Path, cause))
+	} else if m.state.Stats.Failed == gdriveMaxErrors+1 {
+		// Errors 与 Failed 只在这里同步增长，第一条未被记录的失败只会出现一次
+		m.state.add(gdriveEventWarning, "failures_capped", map[string]any{"max": gdriveMaxErrors})
 	}
 	m.Unlock()
 	return m.carryOver(entry.FileID)
@@ -842,6 +949,7 @@ func (m *GDriveBackupTask) appendPending(nodeID int, line *gdrivePendingLine) er
 	}
 	m.Lock()
 	n.Written += int64(len(data))
+	n.Queued++
 	m.Unlock()
 	return nil
 }
@@ -969,7 +1077,10 @@ func (m *GDriveBackupTask) dispatchBatch(ctx context.Context, dep dependency.Dep
 
 	node, err := pickNode(ctx, np, nodeID)
 	if err != nil {
-		return m.failRange(lines, end, n, fmt.Errorf("slave node unavailable: %w", err))
+		cause := fmt.Errorf("slave node unavailable: %w", err)
+		// 节点不可用时不重试，直接把这一批记为失败
+		m.remoteBatchFailed(ctx, dep, nodeID, nil, n.Attempts+1, true, cause)
+		return m.failRange(lines, end, n, cause)
 	}
 
 	ids := lo.Uniq(lo.Map(lines, func(l gdrivePendingLine, _ int) int { return l.Entry.EntityID }))
@@ -1019,12 +1130,18 @@ func (m *GDriveBackupTask) dispatchBatch(ctx context.Context, dep dependency.Dep
 	m.Unlock()
 	taskID, err := node.CreateTask(ctx, queue.SlaveGDriveBackupTaskType, string(payload))
 	if err != nil {
-		return m.retryOrFail(lines, end, n, fmt.Errorf("failed to create slave task: %w", err))
+		return m.retryOrFail(ctx, dep, nodeID, node, lines, end, n, fmt.Errorf("failed to create slave task: %w", err))
 	}
 
 	m.l.Info("Dispatched %d entities to slave node %d as task %d", len(state.Items), nodeID, taskID)
 	m.Lock()
 	n.Inflight = &GDriveRemoteBatch{SlaveTaskID: taskID, End: end}
+	m.state.add(gdriveEventInfo, "remote_dispatched", map[string]any{
+		"node_id":       nodeID,
+		"node_name":     node.Name(),
+		"entities":      len(state.Items),
+		"slave_task_id": taskID,
+	})
 	m.Unlock()
 	return nil
 }
@@ -1056,7 +1173,7 @@ func (m *GDriveBackupTask) pollBatch(ctx context.Context, dep dependency.Dep, np
 		m.Lock()
 		n.Inflight = nil
 		m.Unlock()
-		return m.retryOrFail(lines, end, n, fmt.Errorf("slave task lost: %w", err))
+		return m.retryOrFail(ctx, dep, nodeID, node, lines, end, n, fmt.Errorf("slave task lost: %w", err))
 	}
 
 	switch summary.Status {
@@ -1065,7 +1182,29 @@ func (m *GDriveBackupTask) pollBatch(ctx context.Context, dep dependency.Dep, np
 		if err := json.Unmarshal([]byte(summary.PrivateState), res); err != nil {
 			return fmt.Errorf("failed to parse slave task result: %w", err)
 		}
-		return m.applyResults(nodeID, n, res.Results)
+		if err := m.applyResults(nodeID, n, res.Results); err != nil {
+			return err
+		}
+		var uploaded, reused, failed int
+		for _, r := range res.Results {
+			switch {
+			case r.Error != "":
+				failed++
+			case r.Uploaded:
+				uploaded++
+			default:
+				reused++
+			}
+		}
+		m.event(gdriveEventInfo, "remote_batch_done", map[string]any{
+			"node_id":       nodeID,
+			"node_name":     node.Name(),
+			"slave_task_id": b.SlaveTaskID,
+			"uploaded":      uploaded,
+			"reused":        reused,
+			"failed":        failed,
+		})
+		return nil
 	case task.StatusError, task.StatusCanceled:
 		lines, end, rerr := readPendingLines(m.pendingPath(nodeID), n.Done, gdriveRemoteBatch, b.End)
 		if rerr != nil {
@@ -1074,7 +1213,7 @@ func (m *GDriveBackupTask) pollBatch(ctx context.Context, dep dependency.Dep, np
 		m.Lock()
 		n.Inflight = nil
 		m.Unlock()
-		return m.retryOrFail(lines, end, n, fmt.Errorf("slave task failed: %s", summary.Error))
+		return m.retryOrFail(ctx, dep, nodeID, node, lines, end, n, fmt.Errorf("slave task failed: %s", summary.Error))
 	default:
 		m.Lock()
 		b.PollErrors = 0
@@ -1083,13 +1222,32 @@ func (m *GDriveBackupTask) pollBatch(ctx context.Context, dep dependency.Dep, np
 	}
 }
 
-// retryOrFail 未超过尝试次数时保持偏移不变以便重新派发，否则把这一批记为失败。
-func (m *GDriveBackupTask) retryOrFail(lines []gdrivePendingLine, end int64, n *GDriveRemoteNode, cause error) error {
+// retryOrFail 未超过尝试次数时保持偏移不变以便重新派发，否则把这一批记为失败。node 为空时按 ID 查询节点名称。
+func (m *GDriveBackupTask) retryOrFail(ctx context.Context, dep dependency.Dep, nodeID int, node cluster.Node,
+	lines []gdrivePendingLine, end int64, n *GDriveRemoteNode, cause error) error {
 	m.l.Warning("Remote backup batch failed (attempt %d): %s", n.Attempts, cause)
-	if n.Attempts < gdriveRemoteMaxAttempts {
+	final := n.Attempts >= gdriveRemoteMaxAttempts
+	m.remoteBatchFailed(ctx, dep, nodeID, node, n.Attempts, final, cause)
+	if !final {
 		return nil
 	}
 	return m.failRange(lines, end, n, cause)
+}
+
+// remoteBatchFailed 记录 remote_batch_failed 事件；final 表示不再重试、这一批记为失败。
+func (m *GDriveBackupTask) remoteBatchFailed(ctx context.Context, dep dependency.Dep, nodeID int, node cluster.Node,
+	attempt int, final bool, cause error) {
+	level := gdriveEventWarning
+	if final {
+		level = gdriveEventError
+	}
+	m.event(level, "remote_batch_failed", map[string]any{
+		"node_id":      nodeID,
+		"node_name":    nodeName(ctx, dep, nodeID, node),
+		"attempt":      attempt,
+		"max_attempts": gdriveRemoteMaxAttempts,
+		"error":        cause.Error(),
+	})
 }
 
 func (m *GDriveBackupTask) failRange(lines []gdrivePendingLine, end int64, n *GDriveRemoteNode, cause error) error {
@@ -1152,6 +1310,7 @@ func (m *GDriveBackupTask) awaitRemote(ctx context.Context, dep dependency.Dep) 
 	if remoteDone(m.state.Remote) {
 		m.Lock()
 		m.state.Phase = GDriveBackupPhaseManifest
+		m.state.add(gdriveEventInfo, "manifest_started", nil)
 		m.Unlock()
 		return task.StatusProcessing, nil
 	}
@@ -1175,6 +1334,11 @@ func (m *GDriveBackupTask) uploadManifest(ctx context.Context) (task.Status, err
 	m.Lock()
 	m.state.Stats.Snapshot = f.Name
 	m.state.Phase = GDriveBackupPhaseGC
+	m.state.add(gdriveEventInfo, "snapshot_uploaded", map[string]any{
+		"snapshot": f.Name,
+		"files":    m.state.Stats.Files,
+		"size":     m.state.Stats.Size,
+	})
 	m.Unlock()
 	return task.StatusProcessing, nil
 }
@@ -1195,6 +1359,7 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 	}
 	if restoring {
 		m.l.Info("A restore task is running, skip cleaning up expired backups.")
+		m.event(gdriveEventWarning, "gc_skipped_restoring", nil)
 		return finish()
 	}
 
@@ -1205,6 +1370,7 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 	}
 	cutoff := time.Now().AddDate(0, 0, -m.rt.env.Config.RetentionDays)
 	var kept []backup.Snapshot
+	var deleted []string
 	for i, s := range snaps {
 		// 最新的快照（本次生成）始终保留
 		if i == 0 || !s.CreatedAt.Before(cutoff) {
@@ -1217,12 +1383,17 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 		m.Lock()
 		m.state.Stats.DeletedSnapshots++
 		m.Unlock()
+		deleted = append(deleted, s.Name)
+	}
+	if len(deleted) > 0 {
+		m.event(gdriveEventInfo, "snapshots_deleted", map[string]any{"count": len(deleted), "snapshots": deleted})
 	}
 
 	referenced := make(map[string]struct{})
 	for _, s := range kept {
 		if s.KeyID != backup.KeyIDPlain && s.KeyID != kr.ID() {
 			m.l.Warning("Snapshot %q was encrypted with another key, skip cleaning up blobs until it expires.", s.Name)
+			m.event(gdriveEventWarning, "gc_skipped_foreign_key", map[string]any{"snapshot": s.Name})
 			return finish()
 		}
 		err := store.ScanManifest(ctx, kr, s.ID, nil, func(e *backup.ManifestEntry) error {
@@ -1233,6 +1404,7 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 		})
 		if err != nil {
 			m.l.Warning("Failed to read snapshot %q, skip cleaning up blobs: %s", s.Name, err)
+			m.event(gdriveEventWarning, "gc_skipped_unreadable", map[string]any{"snapshot": s.Name, "error": err.Error()})
 			return finish()
 		}
 	}
@@ -1241,6 +1413,7 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 	if err != nil {
 		return task.StatusError, err
 	}
+	deletedBlobs := 0
 	for name, items := range blobs {
 		victims := items
 		if _, ok := referenced[name]; ok {
@@ -1254,7 +1427,11 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 			m.Lock()
 			m.state.Stats.DeletedBlobs++
 			m.Unlock()
+			deletedBlobs++
 		}
+	}
+	if deletedBlobs > 0 {
+		m.event(gdriveEventInfo, "blobs_deleted", map[string]any{"count": deletedBlobs})
 	}
 	return finish()
 }
@@ -1263,6 +1440,18 @@ func (m *GDriveBackupTask) finish() (task.Status, error) {
 	s := m.state.Stats
 	m.l.Info("Google Drive backup finished: %d files, %d uploaded, %d reused, %d pending, %d failed, %d snapshots and %d blobs deleted",
 		s.Files, s.Uploaded, s.Reused, s.Pending, s.Failed, s.DeletedSnapshots, s.DeletedBlobs)
+	level := gdriveEventInfo
+	if s.Failed > 0 {
+		level = gdriveEventWarning
+	}
+	m.event(level, "finished", map[string]any{
+		"files":         s.Files,
+		"uploaded":      s.Uploaded,
+		"uploaded_size": s.UploadedSize,
+		"reused":        s.Reused,
+		"pending":       s.Pending,
+		"failed":        s.Failed,
+	})
 	if s.Failed > 0 && s.Uploaded == 0 && s.Reused == 0 {
 		reason := ""
 		if len(m.state.Errors) > 0 {
@@ -1317,6 +1506,9 @@ func (m *GDriveBackupTask) Summarize(hasher hashid.Encoder) *queue.Summary {
 	}
 	if s.Snapshot != "" {
 		props["snapshot"] = s.Snapshot
+	}
+	if m.state.Trigger != "" {
+		props["trigger"] = m.state.Trigger
 	}
 	if len(m.state.Errors) > 0 {
 		props["errors"] = m.state.Errors
