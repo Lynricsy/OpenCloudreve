@@ -1,0 +1,115 @@
+src/api/api.ts: error TS6133: 'e' is declared but its value is never read.
+src/component/Admin/Common/AdminCard.tsx: error TS6133: 'theme' is declared but its value is never read.
+src/component/Admin/Entity/EntityDialog/EntityFileList.tsx: error TS6133: 'index' is declared but its value is never read.
+src/component/Admin/File/FileDialog/FileDirectLinks.tsx: error TS6133: 'index' is declared but its value is never read.
+src/component/Admin/File/FileDialog/FileEntity.tsx: error TS6133: 'index' is declared but its value is never read.
+src/component/Admin/File/FileFilterPopover.tsx: error TS6133: 'theme' is declared but its value is never read.
+src/component/Admin/File/ImportFileDialog.tsx: error TS2339: Property 'map' does not exist on type '$SpecialObject'.
+src/component/Admin/File/ImportFileDialog.tsx: error TS7006: Parameter 'index' implicitly has an 'any' type.
+src/component/Admin/File/ImportFileDialog.tsx: error TS7006: Parameter 'warning' implicitly has an 'any' type.
+src/component/Admin/File/UserSearchInput.tsx: error TS18046: 'option' is of type 'unknown'.
+src/component/Admin/File/UserSearchInput.tsx: error TS18046: 'option' is of type 'unknown'.
+src/component/Admin/File/UserSearchInput.tsx: error TS18046: 'option' is of type 'unknown'.
+src/component/Admin/File/UserSearchInput.tsx: error TS18046: 'option' is of type 'unknown'.
+src/component/Admin/File/UserSearchInput.tsx: error TS18046: 'option' is of type 'unknown'.
+src/component/Admin/File/UserSearchInput.tsx: error TS2322: Type '(_event: any, newValue: User | null) => void' is not assignable to type '(event: SyntheticEvent<Element, Event>, value: unknown, reason: AutocompleteChangeReason, details?: AutocompleteChangeDetails<unknown> | undefined) => void'.
+src/component/Admin/File/UserSearchInput.tsx: error TS2322: Type '(options: User[], state: FilterOptionsState<User>) => User[]' is not assignable to type '(options: unknown[], state: FilterOptionsState<unknown>) => unknown[]'.
+src/component/Admin/File/UserSearchInput.tsx: error TS2322: Type 'unknown' is not assignable to type 'User | undefined'.
+src/component/Admin/Group/EditGroup/PolicySelectionInput.tsx: error TS2322: Type '(selected: number) => JSX.Element' is not assignable to type '(value: unknown) => ReactNode'.
+src/component/Admin/Group/NewGroupDIalog.tsx: error TS2739: Type '{ id: number; }' is missing the following properties from type 'StoragePolicy': name, type, edges
+src/component/Admin/Node/EditNode/BasicInfoSection.tsx: error TS6133: 'res' is declared but its value is never read.
+src/component/Admin/Settings/Captcha/CapCaptcha.tsx: error TS2322: Type 'unknown' is not assignable to type 'string'.
+src/component/Admin/Settings/Email/EmailTemplateEditor.tsx: error TS2304: Cannot find name 'MagicVar'.
+src/component/Admin/Settings/Email/EmailTemplateEditor.tsx: error TS6133: 'event' is declared but its value is never read.
+src/component/Admin/Settings/Email/EmailTemplateEditor.tsx: error TS6133: 'templateType' is declared but its value is never read.
+src/component/Admin/Share/ShareRow.tsx: error TS2339: Property 'price' does not exist on type 'Share'.
+src/component/Common/Captcha/ReCaptchaV2.tsx: error TS2339: Property 'getValue' does not exist on type 'never'.
+src/component/Common/Captcha/ReCaptchaV2.tsx: error TS2339: Property 'reset' does not exist on type 'never'.
+src/component/Common/Captcha/ReCaptchaV2.tsx: error TS7016: Could not find a declaration file for module 'react-google-recaptcha'. '/root/Projects/Ling/OpenCloudreve/assets/node_modules/react-google-recaptcha/lib/index.js' implicitly has an 'any' type.
+src/component/Common/Captcha/TurnstileCaptcha.tsx: error TS2339: Property 'reset' does not exist on type 'never'.
+src/component/Common/ErrorBoundary.tsx: error TS2339: Property 'stack' does not exist on type '{}'.
+src/component/Common/ErrorBoundary.tsx: error TS2339: Property 'stack' does not exist on type '{}'.
+src/component/Common/Form/EncodingSelector.tsx: error TS6133: 'theme' is declared but its value is never read.
+src/component/Common/StyledComponents.tsx: error TS6133: 'theme' is declared but its value is never read.
+src/component/Common/StyledComponents.tsx: error TS6133: 'theme' is declared but its value is never read.
+src/component/Common/StyledComponents.tsx: error TS6133: 'theme' is declared but its value is never read.
+src/component/Common/User/UserPopover.tsx: error TS2322: Type '{ children: Element; anchorOrigin: { vertical: "bottom"; horizontal: "left"; }; transformOrigin: { vertical: "top"; horizontal: "left"; }; action?: Ref<PopoverActions> | undefined; ... 298 more ...; open: boolean; }' is not assignable to type 'PopoverProps'.
+src/component/FileManager/ContextMenu/NewFileTemplateMenuItems.tsx: error TS6133: 'props' is declared but its value is never read.
+src/component/FileManager/ContextMenu/TagMenuItems.tsx: error TS6133: 'displayOpt' is declared but its value is never read.
+src/component/FileManager/Dialogs/DirectLinks/DirectLinkItem.tsx: error TS6133: 'index' is declared but its value is never read.
+src/component/FileManager/Explorer/EmojiIcon.tsx: error TS2769: No overload matches this call.
+src/component/FileManager/Explorer/GalleryView/GalleryImage.tsx: error TS2339: Property 'showLock' does not exist on type '{ onClick: (e: MouseEvent<HTMLElement, MouseEvent>) => void; fmIndex: number; isSelected: FileResponse; isLoadingIndicator: boolean | undefined; ... 13 more ...; thumbHeight: number | undefined; }'.
+src/component/FileManager/Explorer/ListView/Cell.tsx: error TS2322: Type '{ children: Element; action?: Ref<PopoverActions> | undefined; anchorEl?: Element | (() => Element) | PopoverVirtualElement | (() => PopoverVirtualElement) | null | undefined; ... 299 more ...; open: boolean; }' is not assignable to type 'PopoverProps'.
+src/component/FileManager/Explorer/ListView/Cell.tsx: error TS7016: Could not find a declaration file for module 'react-highlight-words'. '/root/Projects/Ling/OpenCloudreve/assets/node_modules/react-highlight-words/dist/main.js' implicitly has an 'any' type.
+src/component/FileManager/Explorer/ListView/Column.tsx: error TS2322: Type 'number | undefined' is not assignable to type 'number'.
+src/component/FileManager/Explorer/ListView/Row.tsx: error TS6133: 'theme' is declared but its value is never read.
+src/component/FileManager/Search/SearchIndicator.tsx: error TS6133: 'theme' is declared but its value is never read.
+src/component/FileManager/Sidebar/CustomProps/CustomPropsItem.tsx: error TS6133: 'theme' is declared but its value is never read.
+src/component/FileManager/TopBar/ShareInfoPopover.tsx: error TS2322: Type '{ children: Element; anchorOrigin: { vertical: "bottom"; horizontal: "center"; }; transformOrigin: { vertical: "top"; horizontal: "center"; }; action?: Ref<PopoverActions> | undefined; ... 298 more ...; slotProps?: { ...; } | undefined; }' is not assignable to type 'PopoverProps'.
+src/component/FileManager/TreeView/TreeFile.tsx: error TS2322: Type '{ children: (ReactNode | Element)[]; onClick: (event: MouseEvent<HTMLDivElement, MouseEvent>) => void; component: string; sx: { ...; }; variant: "body2"; }' is not assignable to type 'IntrinsicAttributes & TypographyOwnProps & CommonProps & Omit<Omit<DetailedHTMLProps<HTMLAttributes<HTMLSpanElement>, HTMLSpanElement>, "ref"> & { ...; }, "className" | ... 112 more ... | "variantMapping"> & MUIStyledCommonProps<...>'.
+src/component/FileManager/TreeView/TreeFiles.tsx: error TS2322: Type '{ Icons: ((props: SvgIconProps) => Element)[]; Element?: undefined; } | { Element: (props: { [key: string]: any; }) => Element; Icons?: undefined; } | { Icons: (OverridableComponent<...> & { ...; })[]; Element?: undefined; } | undefined' is not assignable to type 'StartIcon | undefined'.
+src/component/Frame/NavBar/SideNavItem.tsx: error TS2322: Type 'Ref<HTMLElement>' is not assignable to type '((instance: HTMLButtonElement | null) => void) | RefObject<HTMLButtonElement> | null | undefined'.
+src/component/Pages/Devices/AppPromotion.tsx: error TS2769: No overload matches this call.
+src/component/Pages/Login/Signin/PasskeyLoginButton.tsx: error TS6133: 'v' is declared but its value is never read.
+src/component/Pages/Setting/PreferenceSetting.tsx: error TS2322: Type '(_e: any, newValue: string[]) => void' is not assignable to type '(event: SyntheticEvent<Element, Event>, value: unknown, reason: AutocompleteChangeReason, details?: AutocompleteChangeDetails<unknown> | undefined) => void'.
+src/component/Pages/Setting/PreferenceSetting.tsx: error TS2322: Type '(value: readonly string[], getTagProps: AutocompleteRenderGetTagProps) => Element[]' is not assignable to type '(value: unknown[], getTagProps: AutocompleteRenderGetTagProps, ownerState: AutocompleteOwnerState<unknown, boolean | undefined, boolean | undefined, boolean | undefined, ElementType<any, keyof IntrinsicElements>>) => ReactNode'.
+src/component/Pages/Setting/PreferenceSetting.tsx: error TS6133: 'e' is declared but its value is never read.
+src/component/Pages/Setting/PreferenceSetting.tsx: error TS6133: 'index' is declared but its value is never read.
+src/component/Pages/Setting/StorageSetting.tsx: error TS6133: 'setting' is declared but its value is never read.
+src/component/Pages/Tasks/StepProgressPopover.tsx: error TS2322: Type '{ children: Element; anchorOrigin: { vertical: "bottom"; horizontal: "center"; }; transformOrigin: { vertical: "top"; horizontal: "center"; }; action?: Ref<PopoverActions> | undefined; ... 298 more ...; open: boolean; }' is not assignable to type 'PopoverProps'.
+src/component/Uploader/core/index.ts: error TS2345: Argument of type '{ type: TaskType.file; policy: StoragePolicy; dst: string; file: File; size: number; overwrite: boolean | undefined; name: string; chunkProgress: never[]; resumed: false; }' is not assignable to parameter of type 'Task'.
+src/component/Uploader/core/uploader/encrypt/blob.ts: error TS2315: Type 'Uint8Array' is not generic.
+src/component/Uploader/core/uploader/encrypt/blob.ts: error TS2315: Type 'Uint8Array' is not generic.
+src/component/Uploader/core/uploader/encrypt/blob.ts: error TS2315: Type 'Uint8Array' is not generic.
+src/component/Uploader/core/uploader/encrypt/blob.ts: error TS2315: Type 'Uint8Array' is not generic.
+src/component/Uploader/core/uploader/placeholder.ts: error TS6133: 'chunkInfo' is declared but its value is never read.
+src/component/Uploader/core/utils/request.ts: error TS2305: Module '"../types"' has no exported member 'Response'.
+src/component/Uploader/core/utils/request.ts: error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Error'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS18047: 'editor.current' is possibly 'null'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS18047: 'editor.current' is possibly 'null'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS18047: 'editor.current' is possibly 'null'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS18047: 'editor.current' is possibly 'null'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS18047: 'editor.current' is possibly 'null'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS18047: 'model' is possibly 'null'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS18047: 'model' is possibly 'null'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS18048: 'editorWillMount' is possibly 'undefined'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2322: Type 'string | null | undefined' is not assignable to type 'string | null'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2339: Property 'model' does not exist on type 'IStandaloneEditorConstructionOptions | undefined'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2345: Argument of type 'IStandaloneCodeEditor | null' is not assignable to parameter of type 'IStandaloneCodeEditor'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2345: Argument of type 'IStandaloneCodeEditor | null' is not assignable to parameter of type 'IStandaloneCodeEditor'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2345: Argument of type 'ITextModel | null' is not assignable to parameter of type 'ITextModel'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2345: Argument of type 'string | null | undefined' is not assignable to parameter of type 'string'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2345: Argument of type 'string | number | undefined' is not assignable to parameter of type 'string | number'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2345: Argument of type 'string | number | undefined' is not assignable to parameter of type 'string | number'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string | ITextSnapshot'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2722: Cannot invoke an object which is possibly 'undefined'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2722: Cannot invoke an object which is possibly 'undefined'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS2722: Cannot invoke an object which is possibly 'undefined'.
+src/component/Viewers/CodeViewer/MonacoEditor.tsx: error TS6133: 'event' is declared but its value is never read.
+src/component/Viewers/DrawIO/drawio.ts: error TS2339: Property 'user' does not exist on type 'User'.
+src/component/Viewers/DrawIO/drawio.ts: error TS2339: Property 'user' does not exist on type 'User'.
+src/component/Viewers/ImageViewer/react-photo-view/Photo.tsx: error TS6133: 'e' is declared but its value is never read.
+src/component/Viewers/ImageViewer/react-photo-view/PhotoView.tsx: error TS7053: Element implicitly has an 'any' type because expression of type '"onClick" | "onDoubleClick"' can't be used to index type '{}'.
+src/component/Viewers/Video/Artplayer.tsx: error TS2322: Type 'typeof fLoader' is not assignable to type 'FragmentLoaderConstructor'.
+src/component/Viewers/Video/Artplayer.tsx: error TS2322: Type 'typeof pLoader' is not assignable to type 'PlaylistLoaderConstructor'.
+src/component/Viewers/Video/Artplayer.tsx: error TS2339: Property 'frag' does not exist on type 'LoaderContext'.
+src/component/Viewers/Video/Artplayer.tsx: error TS2339: Property 'height' does not exist on type 'object'.
+src/component/Viewers/Video/Artplayer.tsx: error TS2339: Property 'height' does not exist on type 'object'.
+src/component/Viewers/Video/Artplayer.tsx: error TS2339: Property 'name' does not exist on type 'object'.
+src/component/Viewers/Video/Artplayer.tsx: error TS2353: Object literal may only specify known properties, and 'frag' does not exist in type 'LoaderContext'.
+src/redux/thunks/download.ts: error TS2339: Property 'showDirectoryPicker' does not exist on type 'Window & typeof globalThis'.
+src/redux/thunks/download.ts: error TS2339: Property 'showDirectoryPicker' does not exist on type 'Window & typeof globalThis'.
+src/redux/thunks/file.ts: error TS2551: Property 'userAgentData' does not exist on type 'Navigator'. Did you mean 'userAgent'?
+src/redux/thunks/file.ts: error TS2551: Property 'userAgentData' does not exist on type 'Navigator'. Did you mean 'userAgent'?
+src/redux/thunks/file.ts: error TS2551: Property 'userAgentData' does not exist on type 'Navigator'. Did you mean 'userAgent'?
+src/redux/thunks/file.ts: error TS6133: 'e' is declared but its value is never read.
+src/redux/thunks/file.ts: error TS6133: 'relativePath' is declared but its value is never read.
+src/redux/thunks/filemanager.ts: error TS2345: Argument of type 'boolean | undefined' is not assignable to parameter of type 'boolean'.
+src/redux/thunks/viewer.ts: error TS6133: 'getState' is declared but its value is never read.
+src/redux/thunks/viewer.ts: error TS6133: 'getState' is declared but its value is never read.
+src/util/filesystem.ts: error TS2304: Cannot find name 'FileSystemPermissionMode'.
+src/util/filesystem.ts: error TS2339: Property 'entries' does not exist on type 'FileSystemDirectoryHandle'.
+src/util/filesystem.ts: error TS2339: Property 'queryPermission' does not exist on type 'FileSystemDirectoryHandle'.
+src/util/filesystem.ts: error TS2339: Property 'requestPermission' does not exist on type 'FileSystemDirectoryHandle'.

@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # 后端通过 go:embed 内嵌前端包；检查阶段只需占位包即可编译
+      - name: 生成占位前端包
+        run: |
+          mkdir -p /tmp/placeholder/assets/build
+          echo '<html></html>' > /tmp/placeholder/assets/build/index.html
+          (cd /tmp/placeholder && zip -qr "$GITHUB_WORKSPACE/application/statics/assets.zip" assets)
+
+      # 上游存在未格式化文件，只检查本次推送/PR 改动的 Go 文件
+      - name: gofmt
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$BASE_SHA"
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base="HEAD~1"
+          fi
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.go')
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "没有改动的 Go 文件"
+            exit 0
+          fi
+          unformatted="$(gofmt -l "${files[@]}")"
+          if [ -n "$unformatted" ]; then
+            echo "::error::以下文件未经 gofmt 格式化："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go build
+        run: go build ./...
+
+      # pkg/conf、pkg/cache、pkg/request 的测试文件在上游已无法编译；
+      # composites/copylocks/stdmethods 告警均为上游既有问题
+      - name: go vet / go test
+        run: |
+          mapfile -t pkgs < <(go list ./... | grep -v -E '/pkg/(conf|cache|request)$')
+          go vet -composites=false -copylocks=false -stdmethods=false "${pkgs[@]}"
+          go test "${pkgs[@]}"
+
+  frontend:
+    name: 前端检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: assets/yarn.lock
+
+      - name: 安装依赖
+        working-directory: assets
+        run: yarn install --frozen-lockfile --network-timeout 1000000
+
+      - name: Pro 残留检查
+        run: .github/scripts/pro-check.sh
+
+      - name: TypeScript（不得新增基线之外的错误）
+        run: .github/scripts/tsc-check.sh
+
+      - name: 构建
+        working-directory: assets
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: yarn build

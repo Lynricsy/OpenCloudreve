@@ -1,0 +1,185 @@
+name: Docker
+
+# master 推送发布 edge 镜像；推送版本 tag（如 4.19.2）发布正式镜像并更新 latest
+on:
+  push:
+    branches: [master]
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  assets:
+    name: 构建前端包
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      # 版本号以源码 constants.BackendVersion 为准；tag 发布时要求两者一致，避免发出版本号与迁移补丁不符的镜像
+      - name: 确定版本号
+        id: version
+        run: |
+          src_version="$(sed -nE 's/^var BackendVersion = "([^"]+)"/\1/p' application/constants/constants.go)"
+          if [ -z "$src_version" ]; then
+            echo "::error::无法从 application/constants/constants.go 读取 BackendVersion"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$src_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与源码 BackendVersion $src_version 不一致"
+            exit 1
+          fi
+          echo "version=$src_version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: assets/yarn.lock
+
+      - name: 构建前端
+        run: bash .build/build-assets.sh "${{ steps.version.outputs.version }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: assets-zip
+          path: application/statics/assets.zip
+          retention-days: 1
+
+  image:
+    name: 构建镜像 (${{ matrix.arch }})
+    needs: assets
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: assets-zip
+          path: application/statics
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # Dockerfile 直接 COPY 构建上下文中的 cloudreve 二进制，因此在原生架构的 runner 上编译
+      - name: 编译后端
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ needs.assets.outputs.version }}
+        run: |
+          go build -trimpath -o cloudreve -ldflags "-s -w \
+            -X 'github.com/cloudreve/Cloudreve/v4/application/constants.BackendVersion=${VERSION}' \
+            -X 'github.com/cloudreve/Cloudreve/v4/application/constants.LastCommit=${GITHUB_SHA::7}'" .
+
+      - name: 镜像名
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: 导出 digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  manifest:
+    name: 发布多架构清单
+    needs: [assets, image]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: 镜像名
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # master：edge + sha-xxxxxxx；tag：4.19.2、4.19、latest
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=edge,branch=master
+            type=sha,enable=${{ github.ref_type != 'tag' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: 创建并推送清单
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          mapfile -t tag_args < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          refs=()
+          for digest in *; do
+            refs+=("${IMAGE}@sha256:${digest}")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${refs[@]}"
+
+      - name: 检查镜像
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
