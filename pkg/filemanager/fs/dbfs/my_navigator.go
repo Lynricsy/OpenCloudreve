@@ -72,21 +72,23 @@ func (n *myNavigator) RestoreState(s State) error {
 }
 
 func (n *myNavigator) To(ctx context.Context, path *fs.URI) (*File, error) {
+	// Anonymous user does not have a root folder.
+	if inventory.IsAnonymousUser(n.user) {
+		return nil, ErrLoginRequired
+	}
+
+	fsUid, err := n.hasher.Decode(path.ID(hashid.EncodeUserID(n.hasher, n.user.ID)), hashid.UserID)
+	if err != nil {
+		return nil, fs.ErrPathNotExist.WithError(fmt.Errorf("invalid user id"))
+	}
+
+	// 仅本人或可跨用户访问的管理员（令牌受 scope 限制时需 Admin.Read）可访问他人的“我的文件”；
+	// 每次导航都检查，避免经 Context Hint 恢复的导航状态绕过。
+	if fsUid != n.user.ID && !CanAccessOthersFiles(ctx, n.user, false) {
+		return nil, ErrPermissionDenied
+	}
+
 	if n.root == nil {
-		// Anonymous user does not have a root folder.
-		if inventory.IsAnonymousUser(n.user) {
-			return nil, ErrLoginRequired
-		}
-
-		fsUid, err := n.hasher.Decode(path.ID(hashid.EncodeUserID(n.hasher, n.user.ID)), hashid.UserID)
-		if err != nil {
-			return nil, fs.ErrPathNotExist.WithError(fmt.Errorf("invalid user id"))
-		}
-		// 仅本人或管理员可访问他人的“我的文件”
-		if fsUid != n.user.ID && !isAdmin(n.user) {
-			return nil, ErrPermissionDenied
-		}
-
 		ctx = context.WithValue(ctx, inventory.LoadUserGroup{}, true)
 		targetUser, err := n.userClient.GetByID(ctx, fsUid)
 		if err != nil {
@@ -114,7 +116,6 @@ func (n *myNavigator) To(ctx context.Context, path *fs.URI) (*File, error) {
 
 	current, lastAncestor := n.root, n.root
 	elements := path.Elements()
-	var err error
 	for index, element := range elements {
 		lastAncestor = current
 		current, err = n.walkNext(ctx, current, element, index == len(elements)-1)

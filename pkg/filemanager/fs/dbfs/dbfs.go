@@ -13,6 +13,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
+	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
 	"github.com/cloudreve/Cloudreve/v4/pkg/cache"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/encrypt"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/eventhub"
@@ -452,7 +453,7 @@ func (f *DBFS) Get(ctx context.Context, path *fs.URI, opts ...fs.Option) (fs.Fil
 
 	// Calculate folder summary if requested
 	if o.loadFolderSummary && target != nil && target.Type() == types.FileTypeFolder {
-		if !f.isOwnerOrBypass(ctx, target.OwnerID()) {
+		if !f.isOwnerOrBypass(ctx, target.OwnerID(), false) {
 			return nil, fs.ErrOwnerOnly
 		}
 
@@ -548,7 +549,7 @@ func (f *DBFS) Walk(ctx context.Context, path *fs.URI, depth int, walk fs.WalkFu
 	}
 
 	// Require Read permission
-	if !f.isOwnerOrBypass(ctx, target.OwnerID()) {
+	if !f.isOwnerOrBypass(ctx, target.OwnerID(), false) {
 		return fs.ErrOwnerOnly
 	}
 
@@ -866,14 +867,14 @@ func WithBypassOwnerCheck(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ByPassOwnerCheckCtxKey{}, true)
 }
 
-// isOwnerOrBypass 判断当前用户是否可以以所有者身份操作属于 ownerID 的文件。
-func (f *DBFS) isOwnerOrBypass(ctx context.Context, ownerID int) bool {
-	return isOwnerOrBypass(ctx, f.user, ownerID)
+// isOwnerOrBypass 判断当前用户是否可以以所有者身份读取（write=false）或修改（write=true）属于 ownerID 的文件。
+func (f *DBFS) isOwnerOrBypass(ctx context.Context, ownerID int, write bool) bool {
+	return isOwnerOrBypass(ctx, f.user, ownerID, write)
 }
 
 // isOwnerOrBypass 判断 u 是否可以以所有者身份操作属于 ownerID 的文件：上下文显式跳过所有者检查、
-// u 即所有者，或 u 所在用户组为管理员组（管理员可完整读写其他用户的文件）时返回 true。
-func isOwnerOrBypass(ctx context.Context, u *ent.User, ownerID int) bool {
+// u 即所有者，或 u 可跨用户访问他人文件（见 CanAccessOthersFiles）时返回 true。
+func isOwnerOrBypass(ctx context.Context, u *ent.User, ownerID int, write bool) bool {
 	if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); ok {
 		return true
 	}
@@ -882,10 +883,21 @@ func isOwnerOrBypass(ctx context.Context, u *ent.User, ownerID int) bool {
 		return false
 	}
 
-	return ownerID == u.ID || isAdmin(u)
+	return ownerID == u.ID || CanAccessOthersFiles(ctx, u, write)
 }
 
-// isAdmin 判断用户所在用户组是否具备管理员权限。
-func isAdmin(u *ent.User) bool {
-	return u != nil && u.Edges.Group != nil && u.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin))
+// CanAccessOthersFiles 判断 u 能否跨用户读取（write=false）或修改（write=true）其他用户的文件：
+// 要求 u 所在用户组为管理员组；若请求令牌受 OAuth scope 限制，读取还需 Admin.Read，修改还需
+// Admin.Write（Admin.Write 隐含 Admin.Read）。无 scope 限制的会话（如网页登录）只按用户组判定。
+func CanAccessOthersFiles(ctx context.Context, u *ent.User, write bool) bool {
+	if u == nil || u.Edges.Group == nil || !u.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin)) {
+		return false
+	}
+
+	requiredScope := types.ScopeAdminRead
+	if write {
+		requiredScope = types.ScopeAdminWrite
+	}
+
+	return auth.CheckScope(ctx, requiredScope) == nil
 }

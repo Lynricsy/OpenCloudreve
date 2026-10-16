@@ -77,7 +77,8 @@ func (m *manager) GetDirectLink(ctx context.Context, urls ...*fs.URI) ([]DirectL
 			continue
 		}
 
-		if file.OwnerID() != m.user.ID && !m.user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin)) {
+		// 为他人文件创建直链属于跨用户写操作，令牌受 scope 限制时需 Admin.Write
+		if file.OwnerID() != m.user.ID && !dbfs.CanAccessOthersFiles(ctx, m.user, true) {
 			ae.Add(url.String(), fs.ErrOwnerOnly)
 			continue
 		}

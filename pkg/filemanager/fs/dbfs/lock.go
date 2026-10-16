@@ -76,7 +76,7 @@ func (f *DBFS) Lock(ctx context.Context, d time.Duration, requester *ent.User, z
 	}
 
 	// Lock require create or update permission
-	if !isOwnerOrBypass(ctx, requester, ancestor.Owner().ID) {
+	if !isOwnerOrBypass(ctx, requester, ancestor.Owner().ID, true) {
 		return nil, fs.ErrOwnerOnly
 	}
 

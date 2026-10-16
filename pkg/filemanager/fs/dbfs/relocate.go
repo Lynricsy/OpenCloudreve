@@ -33,7 +33,7 @@ func (f *DBFS) PrepareRelocate(ctx context.Context, uri *fs.URI, dst *ent.Storag
 		return nil, fmt.Errorf("failed to get target file: %w", err)
 	}
 
-	if !f.isOwnerOrBypass(ctx, target.OwnerID()) {
+	if !f.isOwnerOrBypass(ctx, target.OwnerID(), true) {
 		return nil, fs.ErrOwnerOnly
 	}
 

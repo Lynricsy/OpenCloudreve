@@ -319,8 +319,9 @@ func GetScopesFromContext(ctx context.Context) (bool, []string) {
 	return true, scopes
 }
 
-func CheckScope(c *gin.Context, requiredScopes ...string) error {
-	hasScopes, tokenScopes := GetScopesFromContext(c)
+// CheckScope 检查上下文中的令牌 scope 是否包含全部 requiredScopes；未受 scope 限制的会话（如网页登录）直接通过。
+func CheckScope(ctx context.Context, requiredScopes ...string) error {
+	hasScopes, tokenScopes := GetScopesFromContext(ctx)
 	if !hasScopes {
 		return nil
 	}

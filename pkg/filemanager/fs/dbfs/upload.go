@@ -34,7 +34,7 @@ func (f *DBFS) PreValidateUpload(ctx context.Context, dst *fs.URI, files ...fs.P
 	}
 
 	// check ownership
-	if !f.isOwnerOrBypass(ctx, dstFile.OwnerID()) {
+	if !f.isOwnerOrBypass(ctx, dstFile.OwnerID(), true) {
 		return fs.ErrOwnerOnly
 	}
 
@@ -113,7 +113,7 @@ func (f *DBFS) PrepareUpload(ctx context.Context, req *fs.UploadRequest, opts ..
 		return nil, fs.ErrPathNotExist
 	}
 
-	if !f.isOwnerOrBypass(ctx, ancestor.OwnerID()) {
+	if !f.isOwnerOrBypass(ctx, ancestor.OwnerID(), true) {
 		return nil, fs.ErrOwnerOnly
 	}
 
@@ -430,7 +430,7 @@ func (f *DBFS) CancelUploadSession(ctx context.Context, path *fs.URI, sessionID 
 		}
 	}
 
-	if !f.isOwnerOrBypass(ctx, filePrivate.OwnerID()) {
+	if !f.isOwnerOrBypass(ctx, filePrivate.OwnerID(), true) {
 		return nil, nil, fs.ErrOwnerOnly
 	}
 
