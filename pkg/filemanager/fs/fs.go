@@ -42,6 +42,8 @@ var (
 	ErrStaleVersion         = serializer.NewError(serializer.CodeStaleVersion, "File is updated during your edit", nil)
 	ErrOwnerOnly            = serializer.NewError(serializer.CodeOwnerOnly, "Only owner or administrator can perform this action", nil)
 	ErrArchiveSrcSizeTooBig = ErrFileSizeTooBig.WithError(fmt.Errorf("total size of to-be compressed file exceed group limit (%w)", queue.CriticalErr))
+	// ErrStoragePolicyNotAllowed 存储策略不在用户组可用范围内
+	ErrStoragePolicyNotAllowed = serializer.NewError(serializer.CodeGroupNotAllowed, "Storage policy not available for this group", nil)
 )
 
 type (
@@ -99,6 +101,9 @@ type (
 		TraverseFile(ctx context.Context, fileID int) (File, error)
 		// PatchProps patches the props of a file.
 		PatchProps(ctx context.Context, uri *URI, props *types.FileProps, delete bool) error
+		// MountPolicy mounts a storage policy to a folder, policyID <= 0 restores inheritance.
+		// Returns the effective storage policy of the folder.
+		MountPolicy(ctx context.Context, path *URI, policyID int) (*ent.StoragePolicy, error)
 	}
 
 	UploadManager interface {

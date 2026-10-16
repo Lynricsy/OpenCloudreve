@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
+	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
@@ -729,6 +730,64 @@ func (s *PatchViewService) Patch(c *gin.Context) error {
 	}
 
 	return nil
+}
+
+type (
+	MountPolicyParamCtx struct{}
+	// MountPolicyService 为目录挂载存储策略，PolicyID 为空表示恢复继承
+	MountPolicyService struct {
+		Uri      string `json:"uri" binding:"required"`
+		PolicyID string `json:"policy_id"`
+	}
+)
+
+// Mount 为目录挂载存储策略，返回挂载后目录实际生效的存储策略
+func (s *MountPolicyService) Mount(c *gin.Context) (*StoragePolicy, error) {
+	dep := dependency.FromContext(c)
+	user := inventory.UserFromContext(c)
+	m := manager.NewFileManager(dep, user)
+	defer m.Recycle()
+
+	uri, err := fs.NewUriFromString(s.Uri)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeParamErr, "unknown uri", err)
+	}
+
+	hasher := dep.HashIDEncoder()
+	policyID := 0
+	if s.PolicyID != "" {
+		policyID, err = hasher.Decode(s.PolicyID, hashid.PolicyID)
+		if err != nil {
+			return nil, serializer.NewError(serializer.CodeParamErr, "unknown policy id", err)
+		}
+	}
+
+	policy, err := m.MountPolicy(c, uri, policyID)
+	if err != nil {
+		return nil, err
+	}
+
+	return BuildStoragePolicy(policy, hasher), nil
+}
+
+// ListUserPolicies 列出当前用户所在用户组可用的全部存储策略，默认策略位于首位
+func ListUserPolicies(c *gin.Context) ([]*StoragePolicy, error) {
+	dep := dependency.FromContext(c)
+	user := inventory.UserFromContext(c)
+	group, err := user.Edges.GroupOrErr()
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeDBError, "User group not loaded", err)
+	}
+
+	policies, err := dep.StoragePolicyClient().ListAvailableByGroup(c, group)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeDBError, "Failed to get available storage policies", err)
+	}
+
+	hasher := dep.HashIDEncoder()
+	return lo.Map(policies, func(p *ent.StoragePolicy, index int) *StoragePolicy {
+		return BuildStoragePolicy(p, hasher)
+	}), nil
 }
 
 type (

@@ -440,6 +440,35 @@ func PatchView(c *gin.Context) {
 	c.JSON(200, serializer.Response{})
 }
 
+// MountPolicy 为目录挂载存储策略
+func MountPolicy(c *gin.Context) {
+	service := ParametersFromContext[*explorer.MountPolicyService](c, explorer.MountPolicyParamCtx{})
+	resp, err := service.Mount(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	c.JSON(200, serializer.Response{
+		Data: resp,
+	})
+}
+
+// UserStoragePolicies 列出当前用户可用的存储策略
+func UserStoragePolicies(c *gin.Context) {
+	resp, err := explorer.ListUserPolicies(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	c.JSON(200, serializer.Response{
+		Data: resp,
+	})
+}
+
 func ListArchiveFiles(c *gin.Context) {
 	service := ParametersFromContext[*explorer.ArchiveListFilesService](c, explorer.ArchiveListFilesParamCtx{})
 	resp, err := service.List(c)

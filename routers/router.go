@@ -796,6 +796,13 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				controllers.FromJSON[explorer.PatchViewService](explorer.PatchViewParameterCtx{}),
 				controllers.PatchView,
 			)
+			// Mount storage policy to folder
+			file.PATCH("policy",
+				middleware.LoginRequired(),
+				middleware.RequiredScopes(types.ScopeFilesWrite),
+				controllers.FromJSON[explorer.MountPolicyService](explorer.MountPolicyParamCtx{}),
+				controllers.MountPolicy,
+			)
 
 			// Server event push
 			file.GET("events",
@@ -1285,6 +1292,8 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				{
 					// 获取当前用户设定
 					setting.GET("", controllers.UserSetting)
+					// 获取当前用户可用的存储策略
+					setting.GET("policies", controllers.UserStoragePolicies)
 					// 从文件上传头像
 					setting.PUT("avatar", middleware.RequiredScopes(types.ScopeUserInfoWrite), controllers.UploadAvatar)
 					// 更改用户设定
