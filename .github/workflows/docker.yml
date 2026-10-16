@@ -16,8 +16,13 @@ concurrency:
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
+  checks:
+    name: 代码检查
+    uses: ./.github/workflows/ci.yml
+
   assets:
     name: 构建前端包
+    needs: checks
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}

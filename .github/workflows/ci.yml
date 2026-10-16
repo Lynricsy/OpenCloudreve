@@ -1,16 +1,17 @@
 name: CI
 
+# master 与版本 tag 的检查由 docker.yml 通过 workflow_call 调用本工作流完成，检查通过后才会发布镜像
 on:
-  push:
-    branches: [master]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
+# 被调用时 github.workflow 为调用方名称，避免与独立运行的 CI 共用并发组而互相取消
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

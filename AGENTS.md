@@ -24,8 +24,8 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 - **后端检查**：与 CI 一致，`go build ./...`；`go vet -composites=false -copylocks=false -stdmethods=false` 和 `go test`，范围是除 `pkg/conf`、`pkg/cache`、`pkg/request` 以外的全部包（这三个包的测试文件在上游已无法编译；关掉的三类 vet 告警都是上游既有问题）。
 - **Pro 残留检查**：`.github/scripts/pro-check.sh`。
 - **CI**（`.github/workflows/`）：
-  - `ci.yml`：push 到 master、PR 和手动触发时运行。后端检查对改动的 Go 文件跑 gofmt，再跑 build、vet、test；前端检查跑 Pro 残留检查、tsc 基线对比和 `yarn build`。只推送前端仓库不会触发，要等根仓库更新子模块指针后才会跑。
-  - `docker.yml`：发布到 `ghcr.io/lynricsy/opencloudreve`。push 到 master 时发布 `edge` 和 `sha-<短哈希>`；推送纯数字版本 tag（如 `4.19.2`）时发布 `4.19.2`、`4.19`、`latest`。流程是前端只构建一次，amd64 和 arm64 分别在原生 runner 上编译二进制、构建镜像，最后合并成多架构清单。镜像沿用上游 `Dockerfile`，不要为 CI 改它。
+  - `ci.yml`：代码检查。后端对改动的 Go 文件跑 gofmt，再跑 build、vet、test；前端跑 Pro 残留检查、tsc 基线对比和 `yarn build`。PR 和手动触发时单独运行；master 推送和版本 tag 不单独触发，而是由 `docker.yml` 通过 `workflow_call` 调用。只推送前端仓库不会触发，要等根仓库更新子模块指针后才会跑。
+  - `docker.yml`：先调用 `ci.yml`，检查通过才发布到 `ghcr.io/lynricsy/opencloudreve`。push 到 master 时发布 `edge` 和 `sha-<短哈希>`；推送纯数字版本 tag（如 `4.19.2`）时发布 `4.19.2`、`4.19`、`latest`。流程是前端只构建一次，amd64 和 arm64 分别在原生 runner 上编译二进制、构建镜像，最后合并成多架构清单。镜像沿用上游 `Dockerfile`，不要为 CI 改它。
   - 发版步骤：先把 `constants.BackendVersion` 改成新版本并推送 master，再执行 `git tag <版本> && git push origin <版本>`。
 - **运行冒烟**：
   - 环境：在仓库根目录执行 `mkdir -p /tmp/x && go build -o /tmp/x/cloudreve .`，然后 `cd /tmp/x`，写 `conf.ini`（`[System]\nMode = master\nListen = :<端口>`），再 `./cloudreve -c conf.ini` 启动。数据库和数据都在 `/tmp/x/data/`。不要在仓库目录里运行二进制，否则会误用残留的旧二进制和旧数据。
