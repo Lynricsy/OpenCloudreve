@@ -70,9 +70,10 @@ type (
 		SharedAddressTranslation(ctx context.Context, path *fs.URI, opts ...fs.Option) (fs.File, *fs.URI, error)
 		// Capacity gets capacity of current file system
 		Capacity(ctx context.Context) (*fs.Capacity, error)
-		// CheckIfCapacityExceeded checks if current user's capacity is exceeded after adding requiredSize bytes,
-		// and sends a notification email (at most once per 24 hours) if so.
-		CheckIfCapacityExceeded(ctx context.Context, requiredSize int64) error
+		// CheckIfCapacityExceeded checks if the capacity of the upload destination's owner (the user owning
+		// dst's "my" space, or current user otherwise) is exceeded after adding requiredSize bytes,
+		// and sends a notification email to that owner (at most once per 24 hours) if so.
+		CheckIfCapacityExceeded(ctx context.Context, dst *fs.URI, requiredSize int64) error
 		// LocalDriver gets local driver for operating local files.
 		LocalDriver(policy *ent.StoragePolicy) driver.Handler
 		// CastStoragePolicyOnSlave check if given storage policy need to be casted to another.

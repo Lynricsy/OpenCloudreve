@@ -15,6 +15,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs/dbfs"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/lock"
+	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 	"github.com/cloudreve/Cloudreve/v4/pkg/setting"
 	"github.com/cloudreve/Cloudreve/v4/pkg/util"
@@ -254,13 +255,18 @@ func (m *manager) Capacity(ctx context.Context) (*fs.Capacity, error) {
 	return res, nil
 }
 
-func (m *manager) CheckIfCapacityExceeded(ctx context.Context, requiredSize int64) error {
-	if m.user == nil || inventory.IsAnonymousUser(m.user) || m.user.Email == "" {
+func (m *manager) CheckIfCapacityExceeded(ctx context.Context, dst *fs.URI, requiredSize int64) error {
+	ctx = context.WithValue(ctx, inventory.LoadUserGroup{}, true)
+	owner, err := m.uploadTargetOwner(ctx, dst)
+	if err != nil {
+		return err
+	}
+
+	if owner == nil || inventory.IsAnonymousUser(owner) || owner.Email == "" {
 		return nil
 	}
 
-	ctx = context.WithValue(ctx, inventory.LoadUserGroup{}, true)
-	capacity, err := m.Capacity(ctx)
+	capacity, err := m.fs.Capacity(ctx, owner)
 	if err != nil {
 		return fmt.Errorf("failed to get user capacity: %w", err)
 	}
@@ -271,7 +277,7 @@ func (m *manager) CheckIfCapacityExceeded(ctx context.Context, requiredSize int6
 	}
 
 	// 同一用户 24 小时内只通知一次
-	notifiedKey := fmt.Sprintf("%s%d", QuotaExceededNotifiedPrefix, m.user.ID)
+	notifiedKey := fmt.Sprintf("%s%d", QuotaExceededNotifiedPrefix, owner.ID)
 	if _, ok := m.kv.Get(notifiedKey); ok {
 		return nil
 	}
@@ -282,20 +288,39 @@ func (m *manager) CheckIfCapacityExceeded(ctx context.Context, requiredSize int6
 
 	// 发信在后台进行，使用不随请求结束而取消的上下文
 	bgCtx := context.WithoutCancel(ctx)
-	user := m.user
 	go func() {
-		title, body, err := email.NewExceedQuotaEmail(bgCtx, m.settings, user, capacity.Used, capacity.Total)
+		title, body, err := email.NewExceedQuotaEmail(bgCtx, m.settings, owner, capacity.Used, capacity.Total)
 		if err != nil {
-			m.l.Warning("Failed to generate quota exceeded email for user %d: %s", user.ID, err)
+			m.l.Warning("Failed to generate quota exceeded email for user %d: %s", owner.ID, err)
 			return
 		}
 
-		if err := m.dep.EmailClient(bgCtx).Send(bgCtx, user.Email, title, body); err != nil {
-			m.l.Warning("Failed to send quota exceeded email to user %d: %s", user.ID, err)
+		if err := m.dep.EmailClient(bgCtx).Send(bgCtx, owner.Email, title, body); err != nil {
+			m.l.Warning("Failed to send quota exceeded email to user %d: %s", owner.ID, err)
 		}
 	}()
 
 	return nil
+}
+
+// uploadTargetOwner 返回上传目标空间的所有者：`cloudreve://<uid>@my/` 指向他人空间时为该用户
+// （仅管理员可进入他人空间，调用方应在目标空间已通过权限校验后调用），否则为当前用户。
+func (m *manager) uploadTargetOwner(ctx context.Context, dst *fs.URI) (*ent.User, error) {
+	if m.user == nil || dst == nil || dst.FileSystem() != constants.FileSystemMy {
+		return m.user, nil
+	}
+
+	uid, err := m.hasher.Decode(dst.ID(hashid.EncodeUserID(m.hasher, m.user.ID)), hashid.UserID)
+	if err != nil || uid == m.user.ID {
+		return m.user, nil
+	}
+
+	owner, err := m.dep.UserClient().GetByID(ctx, uid)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get upload target owner %d: %w", uid, err)
+	}
+
+	return owner, nil
 }
 
 func (l *manager) ConfirmLock(ctx context.Context, ancestor fs.File, uri *fs.URI, token ...string) (func(), fs.LockSession, error) {
