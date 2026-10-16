@@ -75,11 +75,11 @@ func init() {
 }
 
 // NewCreateArchiveTask creates a new CreateArchiveTask
-func NewCreateArchiveTask(ctx context.Context, src []string, dst string) (queue.Task, error) {
+func NewCreateArchiveTask(ctx context.Context, src []string, dst string, nodeID int) (queue.Task, error) {
 	state := &CreateArchiveTaskState{
 		Uris:      src,
 		Dst:       dst,
-		NodeState: NodeState{},
+		NodeState: NodeState{NodeID: nodeID},
 	}
 	stateBytes, err := json.Marshal(state)
 	if err != nil {

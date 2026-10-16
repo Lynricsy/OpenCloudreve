@@ -36,6 +36,8 @@ type (
 		MaxWalkedFiles        int                    `json:"max_walked_files,omitempty"`
 		TrashRetention        int                    `json:"trash_retention,omitempty"`
 		RedirectedSource      bool                   `json:"redirected_source,omitempty"`
+		// AllowedNodes 用户组可用的节点 ID 白名单，为空表示允许全部节点
+		AllowedNodes []int `json:"allowed_nodes,omitempty"`
 	}
 
 	// PolicySetting 非公有的存储策略属性
@@ -253,7 +255,7 @@ const (
 	GroupPermissionShareDownload
 	GroupPermission_CommunityPlaceholder1
 	GroupPermissionRemoteDownload
-	GroupPermission_CommunityPlaceholder2
+	GroupPermissionSelectNode
 	GroupPermissionRedirectedSource // not used
 	GroupPermissionAdvanceDelete
 	GroupPermission_CommunityPlaceholder3

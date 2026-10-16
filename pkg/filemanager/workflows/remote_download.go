@@ -82,12 +82,12 @@ func init() {
 }
 
 // NewRemoteDownloadTask creates a new RemoteDownloadTask
-func NewRemoteDownloadTask(ctx context.Context, src string, srcFile, dst string) (queue.Task, error) {
+func NewRemoteDownloadTask(ctx context.Context, src string, srcFile, dst string, nodeID int) (queue.Task, error) {
 	state := &RemoteDownloadTaskState{
 		SrcUri:     src,
 		SrcFileUri: srcFile,
 		Dst:        dst,
-		NodeState:  NodeState{},
+		NodeState:  NodeState{NodeID: nodeID},
 	}
 	stateBytes, err := json.Marshal(state)
 	if err != nil {

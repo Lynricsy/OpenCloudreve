@@ -17,6 +17,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/workflows"
 	"github.com/cloudreve/Cloudreve/v4/pkg/queue"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
+	"github.com/cloudreve/Cloudreve/v4/service/user"
 	"github.com/gin-gonic/gin"
 	"github.com/gofrs/uuid"
 	"github.com/samber/lo"
@@ -74,6 +75,8 @@ type (
 		Src     []string `json:"src"`
 		SrcFile string   `json:"src_file"`
 		Dst     string   `json:"dst" binding:"required"`
+		// NodeID 用户指定的处理节点（hashid），为空时自动分配
+		NodeID string `json:"node_id"`
 	}
 	CreateDownloadParamCtx struct{}
 )
@@ -87,6 +90,11 @@ func (service *DownloadWorkflowService) CreateDownloadTask(c *gin.Context) ([]*T
 
 	if !user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionRemoteDownload)) {
 		return nil, serializer.NewError(serializer.CodeGroupNotAllowed, "Group not allowed to download files", nil)
+	}
+
+	node, err := resolveTaskNode(c, user, service.NodeID, types.NodeCapabilityRemoteDownload)
+	if err != nil {
+		return nil, err
 	}
 
 	// Src must be set
@@ -137,7 +145,7 @@ func (service *DownloadWorkflowService) CreateDownloadTask(c *gin.Context) ([]*T
 			continue
 		}
 
-		t, err := workflows.NewRemoteDownloadTask(c, src, service.SrcFile, service.Dst)
+		t, err := workflows.NewRemoteDownloadTask(c, src, service.SrcFile, service.Dst, nodeIDOf(node))
 		if err != nil {
 			ae.Add(src, err)
 			continue
@@ -151,7 +159,7 @@ func (service *DownloadWorkflowService) CreateDownloadTask(c *gin.Context) ([]*T
 	}
 
 	if service.SrcFile != "" {
-		t, err := workflows.NewRemoteDownloadTask(c, "", service.SrcFile, service.Dst)
+		t, err := workflows.NewRemoteDownloadTask(c, "", service.SrcFile, service.Dst, nodeIDOf(node))
 		if err != nil {
 			ae.Add(service.SrcFile, err)
 		}
@@ -164,7 +172,7 @@ func (service *DownloadWorkflowService) CreateDownloadTask(c *gin.Context) ([]*T
 	}
 
 	return lo.Map(tasks, func(item queue.Task, index int) *TaskResponse {
-		return BuildTaskResponse(item, nil, hasher)
+		return BuildTaskResponse(item, node, hasher)
 	}), ae.Aggregate()
 }
 
@@ -175,6 +183,8 @@ type (
 		Encoding string   `json:"encoding"`
 		Password string   `json:"password"`
 		FileMask []string `json:"file_mask"`
+		// NodeID 用户指定的处理节点（hashid），为空时自动分配
+		NodeID string `json:"node_id"`
 	}
 	CreateArchiveParamCtx struct{}
 )
@@ -188,6 +198,11 @@ func (service *ArchiveWorkflowService) CreateExtractTask(c *gin.Context) (*TaskR
 
 	if !user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionArchiveTask)) {
 		return nil, serializer.NewError(serializer.CodeGroupNotAllowed, "Group not allowed to compress files", nil)
+	}
+
+	node, err := resolveTaskNode(c, user, service.NodeID, types.NodeCapabilityExtractArchive)
+	if err != nil {
+		return nil, err
 	}
 
 	dst, err := fs.NewUriFromString(service.Dst)
@@ -205,7 +220,7 @@ func (service *ArchiveWorkflowService) CreateExtractTask(c *gin.Context) (*TaskR
 	}
 
 	// Create task
-	t, err := workflows.NewExtractArchiveTask(c, service.Src[0], service.Dst, service.Encoding, service.Password, service.FileMask)
+	t, err := workflows.NewExtractArchiveTask(c, service.Src[0], service.Dst, service.Encoding, service.Password, service.FileMask, nodeIDOf(node))
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeCreateTaskError, "Failed to create task", err)
 	}
@@ -214,7 +229,7 @@ func (service *ArchiveWorkflowService) CreateExtractTask(c *gin.Context) (*TaskR
 		return nil, serializer.NewError(serializer.CodeCreateTaskError, "Failed to queue task", err)
 	}
 
-	return BuildTaskResponse(t, nil, hasher), nil
+	return BuildTaskResponse(t, node, hasher), nil
 }
 
 // CreateCompressTask Create task to create an archive file
@@ -227,6 +242,11 @@ func (service *ArchiveWorkflowService) CreateCompressTask(c *gin.Context) (*Task
 
 	if !user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionArchiveTask)) {
 		return nil, serializer.NewError(serializer.CodeGroupNotAllowed, "Group not allowed to compress files", nil)
+	}
+
+	node, err := resolveTaskNode(c, user, service.NodeID, types.NodeCapabilityCreateArchive)
+	if err != nil {
+		return nil, err
 	}
 
 	dst, err := fs.NewUriFromString(service.Dst)
@@ -249,7 +269,7 @@ func (service *ArchiveWorkflowService) CreateCompressTask(c *gin.Context) (*Task
 	m.OnUploadFailed(c, session)
 
 	// Create task
-	t, err := workflows.NewCreateArchiveTask(c, service.Src, service.Dst)
+	t, err := workflows.NewCreateArchiveTask(c, service.Src, service.Dst, nodeIDOf(node))
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeCreateTaskError, "Failed to create task", err)
 	}
@@ -258,7 +278,78 @@ func (service *ArchiveWorkflowService) CreateCompressTask(c *gin.Context) (*Task
 		return nil, serializer.NewError(serializer.CodeCreateTaskError, "Failed to queue task", err)
 	}
 
-	return BuildTaskResponse(t, nil, hasher), nil
+	return BuildTaskResponse(t, node, hasher), nil
+}
+
+// resolveTaskNode 校验用户为任务指定的处理节点。nodeID 为空时返回 nil，由任务执行时自动分配。
+func resolveTaskNode(c *gin.Context, user *ent.User, nodeID string, capability types.NodeCapability) (*ent.Node, error) {
+	if nodeID == "" {
+		return nil, nil
+	}
+
+	if !user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionSelectNode)) {
+		return nil, serializer.NewError(serializer.CodeNoPermissionErr, "Group not allowed to select node", nil)
+	}
+
+	dep := dependency.FromContext(c)
+	id, err := dep.HashIDEncoder().Decode(nodeID, hashid.NodeID)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeParamErr, "Invalid node id", err)
+	}
+
+	if allowed := user.Edges.Group.Settings.AllowedNodes; len(allowed) > 0 && !lo.Contains(allowed, id) {
+		return nil, serializer.NewError(serializer.CodeParamErr, "Node not allowed", nil)
+	}
+
+	nodes, err := dep.NodeClient().ListActiveNodes(c, []int{id})
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeDBError, "Failed to list nodes", err)
+	}
+
+	if len(nodes) == 0 || !nodeHasCapability(nodes[0], capability) {
+		return nil, serializer.NewError(serializer.CodeParamErr, "Node not available", nil)
+	}
+
+	return nodes[0], nil
+}
+
+// nodeIDOf 返回节点 ID，nil 表示自动分配（0）。
+func nodeIDOf(n *ent.Node) int {
+	if n == nil {
+		return 0
+	}
+
+	return n.ID
+}
+
+// nodeHasCapability 判断节点是否具备指定能力，NodeCapabilityNone 视为任意节点均满足。
+func nodeHasCapability(n *ent.Node, capability types.NodeCapability) bool {
+	return capability == types.NodeCapabilityNone || (n.Capabilities != nil && n.Capabilities.Enabled(int(capability)))
+}
+
+type (
+	ListNodesService struct {
+		Capability int `form:"capability"`
+	}
+	ListNodesParamCtx struct{}
+)
+
+// ListNodes 列出当前用户组可用、且具备指定能力的活跃节点，供创建任务时选择。
+func (service *ListNodesService) ListNodes(c *gin.Context) ([]*user.Node, error) {
+	dep := dependency.FromContext(c)
+	u := inventory.UserFromContext(c)
+
+	nodes, err := dep.NodeClient().ListActiveNodes(c, u.Edges.Group.Settings.AllowedNodes)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeDBError, "Failed to list nodes", err)
+	}
+
+	capability := types.NodeCapability(service.Capability)
+	nodes = lo.Filter(nodes, func(n *ent.Node, _ int) bool {
+		return nodeHasCapability(n, capability)
+	})
+
+	return user.BuildNodes(nodes, dep.HashIDEncoder()), nil
 }
 
 type (

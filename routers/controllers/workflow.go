@@ -24,6 +24,21 @@ func ListTasks(c *gin.Context) {
 	}
 }
 
+// ListWorkflowNodes 列出当前用户可选择的任务处理节点
+func ListWorkflowNodes(c *gin.Context) {
+	service := ParametersFromContext[*explorer.ListNodesService](c, explorer.ListNodesParamCtx{})
+	resp, err := service.ListNodes(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	c.JSON(200, serializer.Response{
+		Data: resp,
+	})
+}
+
 func GetTaskPhaseProgress(c *gin.Context) {
 	taskId := hashid.FromContext(c)
 	resp, err := explorer.TaskPhaseProgress(c, taskId)

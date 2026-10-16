@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
+	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/cluster"
 	"github.com/cloudreve/Cloudreve/v4/pkg/queue"
@@ -32,13 +33,23 @@ func allocateNode(ctx context.Context, dep dependency.Dep, state *NodeState, cap
 		return nil, fmt.Errorf("failed to get node pool: %w", err)
 	}
 
-	node, err := np.Get(ctx, capability, state.NodeID)
+	node, err := np.Get(ctx, capability, state.NodeID, groupAllowedNodes(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node: %w", err)
 	}
 
 	state.NodeID = node.ID()
 	return node, nil
+}
+
+// groupAllowedNodes 返回任务所有者所在用户组的可用节点白名单，为空表示不限制。
+func groupAllowedNodes(ctx context.Context) []int {
+	u := inventory.UserFromContext(ctx)
+	if u == nil || u.Edges.Group == nil || u.Edges.Group.Settings == nil {
+		return nil
+	}
+
+	return u.Edges.Group.Settings.AllowedNodes
 }
 
 // prepareSlaveTaskCtx prepares the context for the slave task.

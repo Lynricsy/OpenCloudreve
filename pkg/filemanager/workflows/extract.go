@@ -73,12 +73,12 @@ func init() {
 }
 
 // NewExtractArchiveTask creates a new ExtractArchiveTask
-func NewExtractArchiveTask(ctx context.Context, src, dst, encoding, password string, mask []string) (queue.Task, error) {
+func NewExtractArchiveTask(ctx context.Context, src, dst, encoding, password string, mask []string, nodeID int) (queue.Task, error) {
 	state := &ExtractArchiveTaskState{
 		Uri:       src,
 		Dst:       dst,
 		Encoding:  encoding,
-		NodeState: NodeState{},
+		NodeState: NodeState{NodeID: nodeID},
 		Password:  password,
 		FileMask:  mask,
 	}
@@ -606,7 +606,7 @@ func (m *SlaveExtractArchiveTask) Do(ctx context.Context) (task.Status, error) {
 		return task.StatusError, fmt.Errorf("failed to get node pool: %w", err)
 	}
 
-	m.node, err = np.Get(ctx, types.NodeCapabilityNone, 0)
+	m.node, err = np.Get(ctx, types.NodeCapabilityNone, 0, nil)
 	if err != nil || !m.node.IsMaster() {
 		return task.StatusError, fmt.Errorf("failed to get master node: %w", err)
 	}

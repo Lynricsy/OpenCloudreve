@@ -565,6 +565,11 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				middleware.HashID(hashid.TaskID),
 				controllers.GetTaskPhaseProgress,
 			)
+			// List nodes available for user to select when creating tasks
+			wf.GET("nodes",
+				controllers.FromQuery[explorer.ListNodesService](explorer.ListNodesParamCtx{}),
+				controllers.ListWorkflowNodes,
+			)
 			// Create task to create an archive file
 			wf.POST("archive",
 				middleware.RequiredScopes(types.ScopeWorkflowWrite),
