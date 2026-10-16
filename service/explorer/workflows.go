@@ -5,6 +5,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"time"
 
+	"github.com/cloudreve/Cloudreve/v4/application/constants"
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/task"
@@ -401,6 +402,77 @@ func (service *ImportWorkflowService) CreateImportTask(c *gin.Context) (*TaskRes
 
 	// Create task
 	t, err := workflows.NewImportTask(c, owner, service.Src, service.Recursive, dst.Join(service.Dst).String(), service.PolicyID)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeCreateTaskError, "Failed to create task", err)
+	}
+
+	if err := dep.IoIntenseQueue(c).QueueTask(c, t); err != nil {
+		return nil, serializer.NewError(serializer.CodeCreateTaskError, "Failed to queue task", err)
+	}
+
+	return BuildTaskResponse(t, nil, hasher), nil
+}
+
+type (
+	RelocateWorkflowService struct {
+		Src         []string `json:"src" binding:"required,min=1"`
+		DstPolicyID string   `json:"dst_policy_id" binding:"required"`
+	}
+	CreateRelocateParamCtx struct{}
+)
+
+// CreateRelocateTask 创建存储策略转移任务，将所选文件（含子目录）的全部实体转移到目标存储策略。
+func (service *RelocateWorkflowService) CreateRelocateTask(c *gin.Context) (*TaskResponse, error) {
+	dep := dependency.FromContext(c)
+	user := inventory.UserFromContext(c)
+	hasher := dep.HashIDEncoder()
+	m := manager.NewFileManager(dep, user)
+	defer m.Recycle()
+
+	if !user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionRelocate)) {
+		return nil, serializer.NewError(serializer.CodeGroupNotAllowed, "Group not allowed to relocate files", nil)
+	}
+
+	policyID, err := hasher.Decode(service.DstPolicyID, hashid.PolicyID)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeParamErr, "Invalid storage policy id", err)
+	}
+
+	policyClient := dep.StoragePolicyClient()
+	dst, err := policyClient.GetPolicyByID(c, policyID)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodePolicyNotExist, "", err)
+	}
+
+	// 负载均衡策略自身不存储数据，加密策略会改变实体格式，均不能作为转移目标
+	if dst.Type == types.PolicyTypeLoadBalance || (dst.Settings != nil && dst.Settings.Encryption) {
+		return nil, serializer.NewError(serializer.CodeParamErr, "Policy cannot be relocation target", nil)
+	}
+
+	available, err := policyClient.ListAvailableByGroup(c, user.Edges.Group)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeDBError, "Failed to get available storage policies", err)
+	}
+	if !lo.ContainsBy(available, func(p *ent.StoragePolicy) bool { return p.ID == dst.ID }) {
+		return nil, fs.ErrStoragePolicyNotAllowed
+	}
+
+	uris, err := fs.NewUriFromStrings(service.Src...)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeParamErr, "Invalid source", err)
+	}
+
+	for _, uri := range uris {
+		if uri.FileSystem() != constants.FileSystemMy {
+			return nil, serializer.NewError(serializer.CodeParamErr, "Only files in my file system can be relocated", nil)
+		}
+
+		if _, err := m.Get(c, uri, dbfs.WithRequiredCapabilities(dbfs.NavigatorCapabilityLockFile)); err != nil {
+			return nil, serializer.NewError(serializer.CodeParamErr, "Invalid source", err)
+		}
+	}
+
+	t, err := workflows.NewRelocateTask(c, lo.Map(uris, func(u *fs.URI, _ int) string { return u.String() }), dst.ID)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeCreateTaskError, "Failed to create task", err)
 	}

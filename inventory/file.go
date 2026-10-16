@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -133,6 +134,8 @@ type (
 		EncryptMetadata *types.EncryptMetadata
 	}
 
+	// RelocateEntityParameter 描述一次实体存储策略转移：Entity 为转移前的实体快照，NewSource 为目标策略下的新物理路径；
+	// ParentFiles 为引用该实体的全部文件，PrimaryEntityParentFiles 为以该实体为主实体的文件（均为准备阶段的快照）。
 	RelocateEntityParameter struct {
 		Entity                   *ent.Entity
 		NewSource                string
@@ -207,6 +210,9 @@ type FileClient interface {
 	SetPrimaryEntity(ctx context.Context, file *ent.File, entity *ent.Entity) error
 	// SetStoragePolicy sets storage policy of a file. For folders, policyID <= 0 clears the mounted policy.
 	SetStoragePolicy(ctx context.Context, file *ent.File, policyID int) error
+	// RelocateEntity 将实体指向给定存储策略下的新物理路径，并更新以其为主实体的文件的存储策略。
+	// 实体自 args.Entity 加载后被修改时返回 ErrEntityRelocateConflict。调用方应在事务中执行。
+	RelocateEntity(ctx context.Context, args *RelocateEntityParameter, policyID int) error
 	// UnlinkEntity unlinks an entity from a file
 	UnlinkEntity(ctx context.Context, entity *ent.Entity, file *ent.File, owner *ent.User) (StorageDiff, error)
 	// CreateDirectLink creates a direct link for a file
@@ -810,6 +816,39 @@ func (f *fileClient) SetStoragePolicy(ctx context.Context, file *ent.File, polic
 	}
 
 	return q.Exec(ctx)
+}
+
+// ErrEntityRelocateConflict 实体在转移期间被并发修改（物理路径或存储策略已变化）。
+var ErrEntityRelocateConflict = errors.New("entity is modified during relocation")
+
+func (f *fileClient) RelocateEntity(ctx context.Context, args *RelocateEntityParameter, policyID int) error {
+	// 仅当实体仍指向转移前的物理路径与存储策略时才更新，避免并发转移/修改导致新旧路径错乱
+	affected, err := f.client.Entity.Update().
+		Where(
+			entity.ID(args.Entity.ID),
+			entity.Source(args.Entity.Source),
+			entity.StoragePolicyEntities(args.Entity.StoragePolicyEntities),
+		).
+		SetSource(args.NewSource).
+		SetStoragePolicyEntities(policyID).
+		Save(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to update entity: %w", err)
+	}
+	if affected == 0 {
+		return ErrEntityRelocateConflict
+	}
+
+	// 以提交时数据库中的主实体关系为准更新文件存储策略（而非准备阶段的 PrimaryEntityParentFiles 快照），
+	// 覆盖转移期间新复制出的、共享该实体的文件
+	if err := f.client.File.Update().
+		Where(file.PrimaryEntity(args.Entity.ID)).
+		SetStoragePoliciesID(policyID).
+		Exec(ctx); err != nil {
+		return fmt.Errorf("failed to update file storage policy: %w", err)
+	}
+
+	return nil
 }
 
 func (f *fileClient) CreateFile(ctx context.Context, root *ent.File, args *CreateFileParameters) (*ent.File, *ent.Entity, StorageDiff, error) {

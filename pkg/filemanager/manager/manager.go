@@ -86,6 +86,10 @@ type (
 		PatchView(ctx context.Context, uri *fs.URI, view *types.ExplorerView) error
 		// MountPolicy mounts a storage policy to a folder, policyID <= 0 restores inheritance.
 		MountPolicy(ctx context.Context, uri *fs.URI, policyID int) (*ent.StoragePolicy, error)
+		// PrepareRelocate 锁定文件并规划其实体向 dst 存储策略的转移，详见 fs.FileSystem.PrepareRelocate。
+		PrepareRelocate(ctx context.Context, uri *fs.URI, dst *ent.StoragePolicy) (*fs.PrepareRelocateRes, error)
+		// RelocateEntity 在物理数据复制完成后将实体指向新路径，详见 fs.FileSystem.RelocateEntity。
+		RelocateEntity(ctx context.Context, e *fs.RelocateEntity, dstPolicyID int) error
 	}
 
 	ShareManagement interface {

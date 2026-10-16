@@ -68,6 +68,12 @@ type (
 		SharedAddressTranslation(ctx context.Context, path *URI, opts ...Option) (File, *URI, error)
 		// ExecuteNavigatorHooks executes hooks of given type on a file for navigator based custom hooks.
 		ExecuteNavigatorHooks(ctx context.Context, hookType HookType, file File) error
+		// PrepareRelocate 锁定给定文件，并为其尚未位于 dst 存储策略的全部实体规划转移。
+		// 若规划了任何实体，返回的 LockToken 必须在转移结束后通过 Unlock 释放。
+		PrepareRelocate(ctx context.Context, path *URI, dst *ent.StoragePolicy) (*PrepareRelocateRes, error)
+		// RelocateEntity 将已规划的实体指向 dstPolicyID 下的新路径，调用前物理数据必须已复制到新路径。
+		// 实体自 PrepareRelocate 之后被修改时返回 ErrModified。
+		RelocateEntity(ctx context.Context, e *RelocateEntity, dstPolicyID int) error
 	}
 
 	FileManager interface {
@@ -390,6 +396,8 @@ type (
 		Entities  map[int]*RelocateEntity `json:"entities,omitempty"`
 		LockToken string                  `json:"lock_token,omitempty"`
 		Policy    *ent.StoragePolicy      `json:"policy,omitempty"`
+		// Skipped 无法转移而被跳过的实体数（加密实体、未完成上传的实体、被其他用户文件共享的实体）
+		Skipped int `json:"skipped"`
 	}
 
 	RelocateEntity struct {

@@ -273,7 +273,7 @@ const (
 	GroupPermissionArchiveTask
 	GroupPermissionWebDAVProxy
 	GroupPermissionShareDownload
-	GroupPermission_CommunityPlaceholder1
+	GroupPermissionRelocate // 存储策略转移
 	GroupPermissionRemoteDownload
 	GroupPermissionSelectNode
 	GroupPermissionRedirectedSource // not used
