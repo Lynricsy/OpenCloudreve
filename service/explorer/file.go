@@ -197,7 +197,7 @@ func (service *ListFileService) List(c *gin.Context) (*ListResponse, error) {
 		return nil, err
 	}
 
-	listResponse := BuildListResponse(c, user, parent, res, hasher)
+	listResponse := BuildListResponse(c, user, parent, res, hasher, dep.StoragePolicyClient())
 	if streamed {
 		WriteEventSource(c, "list", listResponse)
 		return nil, ErrSSETakeOver
@@ -768,7 +768,7 @@ func (s *MountPolicyService) Mount(c *gin.Context) (*StoragePolicy, error) {
 		return nil, err
 	}
 
-	return BuildStoragePolicy(policy, hasher), nil
+	return BuildStoragePolicyWithChildren(c, policy, hasher, dep.StoragePolicyClient()), nil
 }
 
 // ListUserPolicies 列出当前用户所在用户组可用的全部存储策略，默认策略位于首位
@@ -786,8 +786,9 @@ func ListUserPolicies(c *gin.Context) ([]*StoragePolicy, error) {
 	}
 
 	hasher := dep.HashIDEncoder()
+	sc := dep.StoragePolicyClient()
 	return lo.Map(policies, func(p *ent.StoragePolicy, index int) *StoragePolicy {
-		return BuildStoragePolicy(p, hasher)
+		return BuildStoragePolicyWithChildren(c, p, hasher, sc)
 	}), nil
 }
 

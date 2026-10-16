@@ -22,7 +22,8 @@ import (
 )
 
 var (
-	ErrUnknownPolicyType = serializer.NewError(serializer.CodeInternalSetting, "Unknown policy type", nil)
+	ErrUnknownPolicyType   = serializer.NewError(serializer.CodeInternalSetting, "Unknown policy type", nil)
+	ErrLoadBalanceNoDriver = serializer.NewError(serializer.CodeParamErr, "Load balance policy cannot be used for storage operations directly", nil)
 )
 
 const (

@@ -127,6 +127,18 @@ func (f *DBFS) Create(ctx context.Context, path *fs.URI, fileType types.FileType
 				return nil, err
 			}
 
+			if o.preferredStoragePolicy == nil {
+				// 负载均衡策略先解析为接受该文件名的子策略，校验与写入均以该子策略为准
+				name := desired[i]
+				policy, err = f.resolvePolicy(ctx, policy, 0, func(p *ent.StoragePolicy) bool {
+					return validateExtension(name, p) == nil && validateFileNameRegexp(name, p) == nil
+				})
+				if err != nil {
+					return nil, err
+				}
+				o.preferredStoragePolicy = policy
+			}
+
 			if err := validateExtension(desired[i], policy); err != nil {
 				return nil, fs.ErrIllegalObjectName.WithError(err)
 			}
@@ -183,6 +195,14 @@ func (f *DBFS) Rename(ctx context.Context, path *fs.URI, newName string) (fs.Fil
 	}
 
 	if target.Type() == types.FileTypeFile {
+		// 负载均衡策略以文件当前所在的子策略（或任一接受新名称的子策略）进行校验
+		policy, err = f.resolvePolicy(ctx, policy, target.Model.StoragePolicyFiles, func(p *ent.StoragePolicy) bool {
+			return validateExtension(newName, p) == nil && validateFileNameRegexp(newName, p) == nil
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+
 		if err := validateExtension(newName, policy); err != nil {
 			return nil, nil, fs.ErrIllegalObjectName.WithError(err)
 		}

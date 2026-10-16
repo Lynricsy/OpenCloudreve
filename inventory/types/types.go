@@ -119,6 +119,14 @@ type (
 		ChunkConcurrency int `json:"chunk_concurrency,omitempty"`
 		// Whether to enable file encryption.
 		Encryption bool `json:"encryption,omitempty"`
+		// LoadBalanceChildren 负载均衡策略的子策略及权重，仅 load_balance 类型使用。
+		LoadBalanceChildren []LoadBalanceChild `json:"lb_children,omitempty"`
+	}
+
+	// LoadBalanceChild 负载均衡策略中的一个子策略。
+	LoadBalanceChild struct {
+		ID     int `json:"id"`
+		Weight int `json:"weight"`
 	}
 
 	FileType         int
@@ -323,6 +331,8 @@ const (
 	PolicyTypeOd     = "onedrive"
 	PolicyTypeRemote = "remote"
 	PolicyTypeObs    = "obs"
+	// PolicyTypeLoadBalance 负载均衡策略：自身不存储数据，上传时按权重解析为某个子策略。
+	PolicyTypeLoadBalance = "load_balance"
 )
 
 const (

@@ -390,6 +390,15 @@ func (service *ImportWorkflowService) CreateImportTask(c *gin.Context) (*TaskRes
 		return nil, serializer.NewError(serializer.CodeParamErr, "Invalid destination", err)
 	}
 
+	// 负载均衡策略自身不存储数据，不能作为导入来源
+	policy, err := dep.StoragePolicyClient().GetPolicyByID(c, service.PolicyID)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodePolicyNotExist, "", err)
+	}
+	if policy.Type == types.PolicyTypeLoadBalance {
+		return nil, serializer.NewError(serializer.CodeParamErr, "Cannot import from load balance policy", nil)
+	}
+
 	// Create task
 	t, err := workflows.NewImportTask(c, owner, service.Src, service.Recursive, dst.Join(service.Dst).String(), service.PolicyID)
 	if err != nil {

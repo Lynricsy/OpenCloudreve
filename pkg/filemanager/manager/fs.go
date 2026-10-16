@@ -84,6 +84,9 @@ func (m *manager) GetStorageDriver(ctx context.Context, policy *ent.StoragePolic
 		return upyun.New(ctx, policy, m.settings, m.config, m.l, m.dep.MimeDetector(ctx))
 	case types.PolicyTypeOd:
 		return onedrive.New(ctx, policy, m.settings, m.config, m.l, m.dep.CredManager())
+	case types.PolicyTypeLoadBalance:
+		// 负载均衡策略自身不存储数据，必须先解析为子策略后再取驱动
+		return nil, ErrLoadBalanceNoDriver
 	default:
 		return nil, ErrUnknownPolicyType
 	}

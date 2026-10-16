@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/gob"
 	"fmt"
+	"math/rand/v2"
 	"strconv"
 
 	"github.com/cloudreve/Cloudreve/v4/ent"
@@ -11,12 +12,16 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/cache"
 	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
+	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 )
 
 const (
 	// StoragePolicyCacheKey is the cache key of storage policy.
 	StoragePolicyCacheKey = "storage_policy_"
 )
+
+// ErrLoadBalanceNoAvailableChild 负载均衡策略没有任何可用的子策略。
+var ErrLoadBalanceNoAvailableChild = serializer.NewError(serializer.CodeInternalSetting, "Load balance policy has no available child", nil)
 
 func init() {
 	gob.Register(ent.StoragePolicy{})
@@ -187,6 +192,83 @@ func (c *storagePolicyClient) ListAvailableByGroup(ctx context.Context, group *e
 	}
 
 	return res, nil
+}
+
+// ResolveLoadBalance 将负载均衡策略解析为一个具体的子策略，非负载均衡策略原样返回。
+// 无法读取、类型同为负载均衡或指向自身的子策略会被跳过。preferChild 为优先选用的子策略 ID
+// （例如同一文件已有实体所在的子策略），命中且被 accept 接受时直接返回；否则在 accept 接受的子策略中
+// 按权重（最小为 1）随机选取。若没有子策略被 accept 接受，则退化为在全部可用子策略中选取，由调用方
+// 随后的校验返回具体错误。accept 为 nil 时接受全部子策略。
+func ResolveLoadBalance(ctx context.Context, c StoragePolicyClient, policy *ent.StoragePolicy, preferChild int,
+	accept func(*ent.StoragePolicy) bool) (*ent.StoragePolicy, error) {
+	if policy == nil || policy.Type != types.PolicyTypeLoadBalance {
+		return policy, nil
+	}
+
+	type candidate struct {
+		policy *ent.StoragePolicy
+		weight int
+	}
+
+	var children []types.LoadBalanceChild
+	if policy.Settings != nil {
+		children = policy.Settings.LoadBalanceChildren
+	}
+
+	available := make([]candidate, 0, len(children))
+	for _, child := range children {
+		if child.ID == policy.ID {
+			continue
+		}
+
+		p, err := c.GetPolicyByID(ctx, child.ID)
+		if err != nil {
+			logging.FromContext(ctx).Warning("Failed to get child policy %d of load balance policy %d: %s", child.ID, policy.ID, err)
+			continue
+		}
+
+		if p.Type == types.PolicyTypeLoadBalance {
+			continue
+		}
+
+		available = append(available, candidate{policy: p, weight: max(1, child.Weight)})
+	}
+
+	if len(available) == 0 {
+		return nil, ErrLoadBalanceNoAvailableChild
+	}
+
+	accepted := available
+	if accept != nil {
+		accepted = make([]candidate, 0, len(available))
+		for _, item := range available {
+			if accept(item.policy) {
+				accepted = append(accepted, item)
+			}
+		}
+
+		if len(accepted) == 0 {
+			accepted = available
+		}
+	}
+
+	total := 0
+	for _, item := range accepted {
+		if preferChild > 0 && item.policy.ID == preferChild {
+			return item.policy, nil
+		}
+		total += item.weight
+	}
+
+	n := rand.IntN(total)
+	for _, item := range accepted {
+		if n < item.weight {
+			return item.policy, nil
+		}
+		n -= item.weight
+	}
+
+	return accepted[len(accepted)-1].policy, nil
 }
 
 // GetPolicyByID returns the storage policy by id.

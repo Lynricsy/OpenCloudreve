@@ -604,8 +604,13 @@ func (f *DBFS) createFile(ctx context.Context, parent *File, name string, fileTy
 	if o.preferredStoragePolicy != nil {
 		createFileArgs.StoragePolicyID = o.preferredStoragePolicy.ID
 	} else {
-		// get preferred storage policy
+		// get preferred storage policy；负载均衡策略需解析为具体子策略，文件永不引用负载均衡策略
 		policy, err := f.getPreferredPolicy(ctx, parent)
+		if err != nil {
+			return nil, err
+		}
+
+		policy, err = f.resolvePolicy(ctx, policy, 0, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -694,6 +699,14 @@ func (f *DBFS) getPreferredPolicy(ctx context.Context, file *File) (*ent.Storage
 	}
 
 	return allowed[0], nil
+}
+
+// resolvePolicy 将负载均衡策略解析为具体子策略，非负载均衡策略原样返回。
+// preferChild 与 accept 的语义见 inventory.ResolveLoadBalance。
+func (f *DBFS) resolvePolicy(ctx context.Context, policy *ent.StoragePolicy, preferChild int,
+	accept func(*ent.StoragePolicy) bool) (*ent.StoragePolicy, error) {
+	sc, _ := inventory.InheritTx(ctx, f.storagePolicyClient)
+	return inventory.ResolveLoadBalance(ctx, sc, policy, preferChild, accept)
 }
 
 func (f *DBFS) getFileByPath(ctx context.Context, navigator Navigator, path *fs.URI) (*File, error) {

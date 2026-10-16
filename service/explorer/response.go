@@ -305,6 +305,10 @@ type StoragePolicy struct {
 	Relay             bool             `json:"relay,omitempty"`
 	ChunkConcurrency  int              `json:"chunk_concurrency,omitempty"`
 	Encryption        bool             `json:"encryption,omitempty"`
+	// Weight 子策略在所属负载均衡策略中的权重，仅出现在 Children 中。
+	Weight int `json:"weight,omitempty"`
+	// Children 负载均衡策略的子策略。
+	Children []*StoragePolicy `json:"children,omitempty"`
 }
 
 type Entity struct {
@@ -382,7 +386,8 @@ func BuildShare(ctx context.Context, s *ent.Share, base *url.URL, hasher hashid.
 	return &res
 }
 
-func BuildListResponse(ctx context.Context, u *ent.User, parent fs.File, res *fs.ListFileResult, hasher hashid.Encoder) *ListResponse {
+func BuildListResponse(ctx context.Context, u *ent.User, parent fs.File, res *fs.ListFileResult, hasher hashid.Encoder,
+	sc inventory.StoragePolicyClient) *ListResponse {
 	r := &ListResponse{
 		Files: lo.Map(res.Files, func(f fs.File, index int) FileResponse {
 			return *BuildFileResponse(ctx, u, f, hasher, res.Props.Capability)
@@ -393,7 +398,7 @@ func BuildListResponse(ctx context.Context, u *ent.User, parent fs.File, res *fs
 		RecursionLimitReached: res.RecursionLimitReached,
 		MixedType:             res.MixedType,
 		SingleFileView:        res.SingleFileView,
-		StoragePolicy:         BuildStoragePolicy(res.StoragePolicy, hasher),
+		StoragePolicy:         BuildStoragePolicyWithChildren(ctx, res.StoragePolicy, hasher, sc),
 		View:                  res.View,
 	}
 
@@ -532,6 +537,34 @@ func BuildStoragePolicy(sp *ent.StoragePolicy, hasher hashid.Encoder) *StoragePo
 		} else {
 			res.AllowedNameRegexp = sp.Settings.NameRegexp
 		}
+	}
+
+	return res
+}
+
+// BuildStoragePolicyWithChildren 序列化存储策略；负载均衡策略额外附带其子策略（含权重），
+// 且任一子策略开启加密时父级 Encryption 置为 true。无法读取的子策略会被忽略。
+func BuildStoragePolicyWithChildren(ctx context.Context, sp *ent.StoragePolicy, hasher hashid.Encoder,
+	sc inventory.StoragePolicyClient) *StoragePolicy {
+	res := BuildStoragePolicy(sp, hasher)
+	if res == nil || sp.Type != types.PolicyTypeLoadBalance {
+		return res
+	}
+
+	for _, child := range sp.Settings.LoadBalanceChildren {
+		if child.ID == sp.ID {
+			continue
+		}
+
+		childPolicy, err := sc.GetPolicyByID(ctx, child.ID)
+		if err != nil || childPolicy.Type == types.PolicyTypeLoadBalance {
+			continue
+		}
+
+		item := BuildStoragePolicy(childPolicy, hasher)
+		item.Weight = max(1, child.Weight)
+		res.Children = append(res.Children, item)
+		res.Encryption = res.Encryption || item.Encryption
 	}
 
 	return res

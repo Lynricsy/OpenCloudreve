@@ -49,16 +49,22 @@ func (f *DBFS) PreValidateUpload(ctx context.Context, dst *fs.URI, files ...fs.P
 		return err
 	}
 
-	// validate upload request
+	// validate upload request；负载均衡策略按文件解析为接受它的子策略后再校验
 	for _, file := range files {
-		if file.OmitName {
-			if err := validateFileSize(file.Size, policy); err != nil {
-				return err
+		validate := func(p *ent.StoragePolicy) error {
+			if file.OmitName {
+				return validateFileSize(file.Size, p)
 			}
-		} else {
-			if err := validateNewFile(path.Base(file.Name), file.Size, policy); err != nil {
-				return err
-			}
+			return validateNewFile(path.Base(file.Name), file.Size, p)
+		}
+
+		resolved, err := f.resolvePolicy(ctx, policy, 0, func(p *ent.StoragePolicy) bool { return validate(p) == nil })
+		if err != nil {
+			return err
+		}
+
+		if err := validate(resolved); err != nil {
+			return err
 		}
 	}
 
@@ -127,8 +133,22 @@ func (f *DBFS) PrepareUpload(ctx context.Context, req *fs.UploadRequest, opts ..
 	)
 	if req.ImportFrom == nil {
 		policy, err = f.getPreferredPolicy(ctx, ancestor)
+		if err == nil {
+			// 负载均衡策略解析为具体子策略：同一文件的新版本/缩略图/LivePhoto 等实体优先沿用该文件
+			// 已有实体所在的子策略；新文件在接受该文件的子策略中按权重选取。
+			preferChild := 0
+			if fileExisted {
+				preferChild = ancestor.Model.StoragePolicyFiles
+			}
+			policy, err = f.resolvePolicy(ctx, policy, preferChild, func(p *ent.StoragePolicy) bool {
+				return validateNewFile(req.Props.Uri.Name(), req.Props.Size, p) == nil
+			})
+		}
 	} else {
 		policy, err = f.storagePolicyClient.GetPolicyByID(ctx, req.Props.PreferredStoragePolicy)
+		if err == nil && policy.Type == types.PolicyTypeLoadBalance {
+			err = serializer.NewError(serializer.CodeParamErr, "Cannot import from load balance policy", nil)
+		}
 	}
 	if err != nil {
 		return nil, err

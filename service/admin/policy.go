@@ -96,6 +96,22 @@ func (service *SingleStoragePolicyService) Delete(c *gin.Context) error {
 		return serializer.NewError(serializer.CodePolicyUsedByGroups, strconv.Itoa(referencedGroups), nil)
 	}
 
+	// If policy is used as child of any load balance policy, return error
+	lbPolicies, err := storagePolicyClient.ListPolicyByType(ctx, types.PolicyTypeLoadBalance)
+	if err != nil {
+		return serializer.NewError(serializer.CodeDBError, "Failed to list load balance policies", err)
+	}
+
+	for _, lb := range lbPolicies {
+		if lb.ID == policy.ID || lb.Settings == nil {
+			continue
+		}
+
+		if lo.ContainsBy(lb.Settings.LoadBalanceChildren, func(child types.LoadBalanceChild) bool { return child.ID == policy.ID }) {
+			return serializer.NewError(serializer.CodeParamErr, "Policy is used by load balance policy "+lb.Name, nil)
+		}
+	}
+
 	used, err := dep.FileClient().IsStoragePolicyUsedByEntities(ctx, service.ID)
 	if err != nil {
 		return serializer.NewError(serializer.CodeDBError, "Failed to check if policy is used by entities", err)
@@ -279,6 +295,10 @@ func (service *CreateStoragePolicyService) Create(c *gin.Context) (*GetStoragePo
 	}
 
 	service.Policy.ID = 0
+	if err := normalizeLoadBalancePolicy(c, storagePolicyClient, service.Policy); err != nil {
+		return nil, err
+	}
+
 	policy, err := storagePolicyClient.Upsert(c, service.Policy)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeDBError, "Failed to create policy", err)
@@ -309,6 +329,21 @@ func (service *UpdateStoragePolicyService) Update(c *gin.Context) (*GetStoragePo
 
 	service.Policy.ID = idInt
 
+	// 存储策略类型不允许在负载均衡与普通类型之间切换：否则已有实体可能引用负载均衡策略，
+	// 或负载均衡策略的子策略变为负载均衡策略。
+	existing, err := storagePolicyClient.GetPolicyByID(context.WithValue(c, inventory.SkipStoragePolicyCache{}, true), idInt)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodePolicyNotExist, "", err)
+	}
+
+	if (existing.Type == types.PolicyTypeLoadBalance) != (service.Policy.Type == types.PolicyTypeLoadBalance) {
+		return nil, serializer.NewError(serializer.CodeParamErr, "Cannot change policy type from or to load balance", nil)
+	}
+
+	if err := normalizeLoadBalancePolicy(c, storagePolicyClient, service.Policy); err != nil {
+		return nil, err
+	}
+
 	sc, tx, ctx, err := inventory.WithTx(c, storagePolicyClient)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeDBError, "Failed to create transaction", err)
@@ -328,6 +363,52 @@ func (service *UpdateStoragePolicyService) Update(c *gin.Context) (*GetStoragePo
 
 	s := SingleStoragePolicyService{ID: idInt}
 	return s.Get(c)
+}
+
+// normalizeLoadBalancePolicy 校验并规范负载均衡策略的子策略配置：至少一个子策略，子策略必须存在、
+// 不能是负载均衡策略、不能是自身且不能重复，权重小于 1 时置为 1。非负载均衡策略会清空该配置。
+func normalizeLoadBalancePolicy(ctx context.Context, sc inventory.StoragePolicyClient, policy *ent.StoragePolicy) error {
+	if policy.Type != types.PolicyTypeLoadBalance {
+		if policy.Settings != nil {
+			policy.Settings.LoadBalanceChildren = nil
+		}
+		return nil
+	}
+
+	invalid := func(err error) error {
+		return serializer.NewError(serializer.CodeParamErr, "Invalid load balance children", err)
+	}
+
+	if policy.Settings == nil || len(policy.Settings.LoadBalanceChildren) == 0 {
+		return invalid(fmt.Errorf("at least one child policy is required"))
+	}
+
+	ctx = context.WithValue(ctx, inventory.SkipStoragePolicyCache{}, true)
+	seen := make(map[int]bool, len(policy.Settings.LoadBalanceChildren))
+	for i := range policy.Settings.LoadBalanceChildren {
+		child := &policy.Settings.LoadBalanceChildren[i]
+		if policy.ID != 0 && child.ID == policy.ID {
+			return invalid(fmt.Errorf("child policy cannot be the load balance policy itself"))
+		}
+
+		if seen[child.ID] {
+			return invalid(fmt.Errorf("duplicated child policy %d", child.ID))
+		}
+		seen[child.ID] = true
+
+		childPolicy, err := sc.GetPolicyByID(ctx, child.ID)
+		if err != nil {
+			return invalid(fmt.Errorf("child policy %d not found: %w", child.ID, err))
+		}
+
+		if childPolicy.Type == types.PolicyTypeLoadBalance {
+			return invalid(fmt.Errorf("child policy %d cannot be a load balance policy", child.ID))
+		}
+
+		child.Weight = max(1, child.Weight)
+	}
+
+	return nil
 }
 
 type (
