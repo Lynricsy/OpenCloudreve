@@ -23,7 +23,7 @@ func (f *DBFS) PatchProps(ctx context.Context, uri *fs.URI, props *types.FilePro
 		return fmt.Errorf("failed to get target file: %w", err)
 	}
 
-	if target.OwnerID() != f.user.ID && !f.user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin)) {
+	if !f.isOwnerOrBypass(ctx, target.OwnerID()) {
 		return fs.ErrOwnerOnly.WithError(fmt.Errorf("only file owner can modify file props"))
 	}
 
@@ -72,7 +72,7 @@ func (f *DBFS) PatchMetadata(ctx context.Context, path []*fs.URI, metas ...fs.Me
 		}
 
 		// Require Update permission
-		if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); !ok && target.OwnerID() != f.user.ID {
+		if !f.isOwnerOrBypass(ctx, target.OwnerID()) {
 			return fs.ErrOwnerOnly.WithError(fmt.Errorf("permission denied"))
 		}
 

@@ -29,7 +29,7 @@ func (f *DBFS) MountPolicy(ctx context.Context, path *fs.URI, policyID int) (*en
 		return nil, fmt.Errorf("failed to get target file: %w", err)
 	}
 
-	if target.OwnerID() != f.user.ID {
+	if !f.isOwnerOrBypass(ctx, target.OwnerID()) {
 		return nil, fs.ErrOwnerOnly
 	}
 

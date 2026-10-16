@@ -34,8 +34,8 @@ func (f *DBFS) PreValidateUpload(ctx context.Context, dst *fs.URI, files ...fs.P
 	}
 
 	// check ownership
-	if f.user.ID != dstFile.OwnerID() {
-		return fmt.Errorf("failed to evaluate permission: %w", err)
+	if !f.isOwnerOrBypass(ctx, dstFile.OwnerID()) {
+		return fs.ErrOwnerOnly
 	}
 
 	total := int64(0)
@@ -107,7 +107,7 @@ func (f *DBFS) PrepareUpload(ctx context.Context, req *fs.UploadRequest, opts ..
 		return nil, fs.ErrPathNotExist
 	}
 
-	if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); !ok && ancestor.OwnerID() != f.user.ID {
+	if !f.isOwnerOrBypass(ctx, ancestor.OwnerID()) {
 		return nil, fs.ErrOwnerOnly
 	}
 
@@ -167,9 +167,10 @@ func (f *DBFS) PrepareUpload(ctx context.Context, req *fs.UploadRequest, opts ..
 		(req.Props.EntityType != nil && *req.Props.EntityType == types.EntityTypeThumbnail) &&
 		req.ImportFrom == nil
 	if req.Props.SavePath == "" || isThumbnailAndPolicyNotAvailable {
-		req.Props.SavePath = generateSavePath(policy, req, f.user)
+		// 保存路径中的 {uid} 等魔法变量按文件所有者生成（管理员向他人空间上传时为目标用户）
+		req.Props.SavePath = generateSavePath(policy, req, owner)
 		if isThumbnailAndPolicyNotAvailable {
-			req.Props.SavePath = path.Clean(util.ReplaceMagicVar(f.settingClient.ThumbEntitySuffix(ctx), fs.Separator, true, true, time.Now(), f.user.ID, req.Props.Uri.Name(), req.Props.Uri.Path(), req.Props.SavePath))
+			req.Props.SavePath = path.Clean(util.ReplaceMagicVar(f.settingClient.ThumbEntitySuffix(ctx), fs.Separator, true, true, time.Now(), owner.ID, req.Props.Uri.Name(), req.Props.Uri.Path(), req.Props.SavePath))
 		}
 	}
 
@@ -409,7 +410,7 @@ func (f *DBFS) CancelUploadSession(ctx context.Context, path *fs.URI, sessionID 
 		}
 	}
 
-	if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); !ok && filePrivate.OwnerID() != f.user.ID {
+	if !f.isOwnerOrBypass(ctx, filePrivate.OwnerID()) {
 		return nil, nil, fs.ErrOwnerOnly
 	}
 

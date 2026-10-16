@@ -82,7 +82,8 @@ func (n *myNavigator) To(ctx context.Context, path *fs.URI) (*File, error) {
 		if err != nil {
 			return nil, fs.ErrPathNotExist.WithError(fmt.Errorf("invalid user id"))
 		}
-		if fsUid != n.user.ID {
+		// 仅本人或管理员可访问他人的“我的文件”
+		if fsUid != n.user.ID && !isAdmin(n.user) {
 			return nil, ErrPermissionDenied
 		}
 

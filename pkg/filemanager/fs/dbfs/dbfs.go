@@ -236,7 +236,8 @@ func (f *DBFS) Capacity(ctx context.Context, u *ent.User) (*fs.Capacity, error) 
 		return nil, serializer.NewError(serializer.CodeDBError, "Failed to get user's group", err)
 	}
 
-	res.Used = f.user.Storage
+	// 按目标用户（而非请求者）计算已用容量：管理员向他人空间写入时以目标用户的配额为准
+	res.Used = u.Storage
 	res.Total = requesterGroup.MaxStorage
 	return res, nil
 }
@@ -451,7 +452,7 @@ func (f *DBFS) Get(ctx context.Context, path *fs.URI, opts ...fs.Option) (fs.Fil
 
 	// Calculate folder summary if requested
 	if o.loadFolderSummary && target != nil && target.Type() == types.FileTypeFolder {
-		if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); !ok && target.OwnerID() != f.user.ID {
+		if !f.isOwnerOrBypass(ctx, target.OwnerID()) {
 			return nil, fs.ErrOwnerOnly
 		}
 
@@ -547,7 +548,7 @@ func (f *DBFS) Walk(ctx context.Context, path *fs.URI, depth int, walk fs.WalkFu
 	}
 
 	// Require Read permission
-	if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); !ok && target.OwnerID() != f.user.ID {
+	if !f.isOwnerOrBypass(ctx, target.OwnerID()) {
 		return fs.ErrOwnerOnly
 	}
 
@@ -850,4 +851,28 @@ func allAncestors(targets []*File) []*ent.File {
 
 func WithBypassOwnerCheck(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ByPassOwnerCheckCtxKey{}, true)
+}
+
+// isOwnerOrBypass 判断当前用户是否可以以所有者身份操作属于 ownerID 的文件。
+func (f *DBFS) isOwnerOrBypass(ctx context.Context, ownerID int) bool {
+	return isOwnerOrBypass(ctx, f.user, ownerID)
+}
+
+// isOwnerOrBypass 判断 u 是否可以以所有者身份操作属于 ownerID 的文件：上下文显式跳过所有者检查、
+// u 即所有者，或 u 所在用户组为管理员组（管理员可完整读写其他用户的文件）时返回 true。
+func isOwnerOrBypass(ctx context.Context, u *ent.User, ownerID int) bool {
+	if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); ok {
+		return true
+	}
+
+	if u == nil {
+		return false
+	}
+
+	return ownerID == u.ID || isAdmin(u)
+}
+
+// isAdmin 判断用户所在用户组是否具备管理员权限。
+func isAdmin(u *ent.User) bool {
+	return u != nil && u.Edges.Group != nil && u.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin))
 }
