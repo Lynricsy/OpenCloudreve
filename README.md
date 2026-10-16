@@ -66,7 +66,8 @@ This is a personal fork of Cloudreve Community Edition v4 (backend [Lynricsy/Ope
   - Per-group allowed node whitelist and user-selected processing node for archive/extract/remote download tasks (`GET /api/v4/workflow/nodes`);
   - Group default pinned shares, `user` custom property type, storage quota exceeded email.
 - Compatible with the official desktop client [cloudreve/desktop](https://github.com/cloudreve/desktop) (OAuth + PKCE, SSE file events, upload credentials never expose a load-balance policy).
-- Version `4.14.1`; upgrading from 4.14.0 runs the `clear_folder_storage_policy` database patch automatically.
+- Based on upstream release `4.19.1`; this fork reports version `4.19.2` (upstream source keeps a stale default version and injects the real one from the git tag at release). Upgrading from upstream runs the `clear_folder_storage_policy` database patch once.
+- Docker images are published to GHCR by GitHub Actions: `ghcr.io/lynricsy/opencloudreve:latest` (release tags) and `:edge` (latest `master`), for `linux/amd64` and `linux/arm64`. The bundled `docker-compose.yml` uses this image.
 
 ## :hammer_and_wrench: Deploy
 

@@ -9,7 +9,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 | 根仓库（Go 后端） | `Lynricsy/OpenCloudreve` | `cloudreve/Cloudreve` | `master` |
 | `assets/` 子模块（React 前端） | `Lynricsy/OpenCloudreve-frontend` | `cloudreve/frontend` | `main` |
 
-- 分叉基线：后端 `9f1e0b8`，前端 `19da0fe`。查看本分支全部改动：`git diff 9f1e0b8..HEAD -- . ':!assets'` 和 `git -C assets diff 19da0fe..HEAD`。
+- 分叉基线：后端 `9f1e0b8`（上游发布 tag `4.19.1` 之后的 1 个提交），前端 `19da0fe`。查看本分支全部改动：`git diff 9f1e0b8..HEAD -- . ':!assets'` 和 `git -C assets diff 19da0fe..HEAD`。
 - `.gitmodules` 已指向前端 fork（`branch = main`），不要改回上游。
 - 提交顺序：先在 `assets/` 提交并 `git push origin main`，再在根仓库 `git add assets <其他文件>` 提交并 `git push origin master`。
 - 工作日志在 `.agent-logs/`（已 gitignore），通过 `record-agent-log` 写，`search-logs` 查。本分支的设计决策记录在编号 0003–0030 的日志里。
@@ -17,10 +17,16 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 ## 2. 构建、运行与验证
 
 - **后端编译**依赖 `application/statics/assets.zip`（`go:embed`，已 gitignore）。只需要编译时，放一个占位 zip 即可，内含 `assets/build/index.html`。本机没有 `zip` 命令，用 Python 的 `zipfile` 生成。
+- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.2`）；CI 发布 tag 时会强制要求 tag 与常量一致。
 - **正式打包**：`.build/build-assets.sh <版本号>`。这个脚本会把前端 `package.json` 的版本改成传入的版本号，需要系统有 `zip` 命令。如果直接 `yarn build`，启动时会报 `Static resource version mismatch`，页面仍能用。版本号必须等于 `constants.BackendVersion`。
 - **前端**：用 `yarn`（`npm i -g yarn@1`）。`assets/` 有 husky pre-commit，会对暂存文件跑 prettier（lint-staged）。
-- **类型检查**：`npx tsc --noEmit -p .`。上游本身就带一批 TS 错误（分叉时 127 条，现在 115 条）。`vite build` 不做类型检查，所以 `yarn build` 通过不代表类型正确。验收标准是“没有新增错误”：在改动前的提交上建一个临时 worktree 跑一次 tsc 作为基线，去掉行列号、`LC_ALL=C sort` 之后用 `comm` 对比。注意：含 `GroupPermission` 类型字面量的报错，文本会随权限位的增减而变化，属于误报。
-- **后端检查**：`go build ./... && go test ./service/oauth/... ./inventory/... ./pkg/filemanager/... ./pkg/cluster/... ./pkg/queue/... ./pkg/auth/...`。`go vet ./...` 有上游既有告警（aria2 rpc 复制锁、HMACAuth 无键字面量、几个过时的 `_test.go`），不是本分支引入的。
+- **类型检查**：`.github/scripts/tsc-check.sh`（需先在 `assets/` 里 `yarn install`）。上游本身就带一批 TS 错误（分叉时 127 条，现在 115 条），基线存在 `.github/tsc-baseline.txt`，脚本会去掉行列号、按字节序排序后对比，出现基线之外的错误就失败。`vite build` 不做类型检查，所以 `yarn build` 通过不代表类型正确。错误减少，或者因为权限位增减导致 `GroupPermission` 类型字面量的报错文本变化时，确认没有真正新增错误后，运行 `.github/scripts/tsc-check.sh --update` 更新基线。
+- **后端检查**：与 CI 一致，`go build ./...`；`go vet -composites=false -copylocks=false -stdmethods=false` 和 `go test`，范围是除 `pkg/conf`、`pkg/cache`、`pkg/request` 以外的全部包（这三个包的测试文件在上游已无法编译；关掉的三类 vet 告警都是上游既有问题）。
+- **Pro 残留检查**：`.github/scripts/pro-check.sh`。
+- **CI**（`.github/workflows/`）：
+  - `ci.yml`：push 到 master、PR 和手动触发时运行。后端检查对改动的 Go 文件跑 gofmt，再跑 build、vet、test；前端检查跑 Pro 残留检查、tsc 基线对比和 `yarn build`。只推送前端仓库不会触发，要等根仓库更新子模块指针后才会跑。
+  - `docker.yml`：发布到 `ghcr.io/lynricsy/opencloudreve`。push 到 master 时发布 `edge` 和 `sha-<短哈希>`；推送纯数字版本 tag（如 `4.19.2`）时发布 `4.19.2`、`4.19`、`latest`。流程是前端只构建一次，amd64 和 arm64 分别在原生 runner 上编译二进制、构建镜像，最后合并成多架构清单。镜像沿用上游 `Dockerfile`，不要为 CI 改它。
+  - 发版步骤：先把 `constants.BackendVersion` 改成新版本并推送 master，再执行 `git tag <版本> && git push origin <版本>`。
 - **运行冒烟**：
   - 环境：在仓库根目录执行 `mkdir -p /tmp/x && go build -o /tmp/x/cloudreve .`，然后 `cd /tmp/x`，写 `conf.ini`（`[System]\nMode = master\nListen = :<端口>`），再 `./cloudreve -c conf.ini` 启动。数据库和数据都在 `/tmp/x/data/`。不要在仓库目录里运行二进制，否则会误用残留的旧二进制和旧数据。
   - 管理员：新库里第一个注册的用户（`POST /api/v4/user`）就是管理员，登录接口是 `POST /api/v4/session/token`。
@@ -48,7 +54,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 - `GroupSetting.allowed_nodes []int`：节点白名单，为空表示全部节点。`NodePool.Get(ctx, cap, preferred, allowed)` 的自动分配也受它限制。
 - `GroupSetting.default_pinned [{share_id,name}]`：会被前置到 `/user/me` 的 `pined` 里，并带 `locked: true`；对这些项调用 `UnpinFile` 会返回 403。
 - `PolicySetting.lb_children [{id,weight}]`：负载均衡策略的子策略。
-- `files.storage_policy_files` 的含义：在**目录**上，`>0` 表示显式挂载了策略，NULL 表示继承；在**文件**上，记录主实体所在的策略。迁移补丁 `clear_folder_storage_policy`（EndVersion `4.14.1`）会**无条件**清空所有目录上的这一列，用来清理旧版本写入的值；它只能在从 4.14.1 之前的版本升级时跑一次。
+- `files.storage_policy_files` 的含义：在**目录**上，`>0` 表示显式挂载了策略，NULL 表示继承；在**文件**上，记录主实体所在的策略。迁移补丁 `clear_folder_storage_policy`（EndVersion `4.19.2`）会**无条件**清空所有目录上的这一列，用来清理旧版本写入的值；它只在从上游版本（≤ 4.19.1）升级时跑一次。这个补丁已经随 4.19.2 发布，EndVersion 不能再改。
 - 设置项 `mail_exceed_quota_template`；KV 键 `quota_exceeded_notified_<uid>`（24 小时内只发一次）。
 
 ### 3.4 关键不变量
@@ -71,6 +77,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 
 ### 3.6 官方桌面客户端契约（`cloudreve/desktop`，没有 Pro 门控）
 - **版本**：`/site/ping` 返回的版本必须 ≥ 4.12.0，并且只能是纯数字点分格式（客户端按 `.` 切分后逐段比较数字），**不要**加 `-xxx` 之类的后缀。
+- **官方 CLI（`cloudreve/cli`，有 macOS 版）**：要求服务端版本 ≥ 4.17.0 且 < 5。CLI 1.0.0 已在 4.19.2 上实测通过：密码登录、`ls`、上传、`cat`、`stat` 都正常。
 - **OAuth**：内置 client `393a1839-f52e-498e-9972-e77cc2241eee`，在 `inventory/migration.go` 里写入；回调地址 `/callback/desktop`，PKCE S256；刷新令牌走 `POST /session/token/refresh`。
 - **其他契约**：SSE `GET /file/events`（要求 `X-Cr-Client-Id` 为 UUID）；`ExtendedInfo.storage_policy_inherited` 是必填字段；上传凭证不得是 LB 策略。
 - **已知不一致**：客户端期望 `GET /user/setting` 返回 `credit` 字段（Pro 积分残留），我们没有补，客户端目前也不调用这个接口。
@@ -92,8 +99,8 @@ git merge upstream/master
 注意事项：
 - **版本号和迁移补丁（最容易出错）**：
   - 机制：只有当库里没有 `db_version_<BackendVersion>` 这一行时才会跑迁移；补丁只在“已应用的最高版本 < 补丁 EndVersion”时执行。
-  - 风险：本分支已经用了 `4.14.1`。如果上游之后发布的版本 ≤ 本分支已部署的版本，上游补丁的 EndVersion 也会 ≤ 本分支库里记录的版本，**这些补丁在本分支已升级过的库上会被跳过**。
-  - 规则：合并上游版本 X 后，把 `BackendVersion` 设为大于 X、也大于本分支任何已发布版本的纯数字版本，比如上游发布 4.14.1 后，本分支改用 4.14.2。逐个审计上游新增的补丁：EndVersion ≤ 本分支已部署版本的，在本分支已升级的库上不会执行，要先确认该补丁在这些库上是否必要、能否安全重复执行，再决定把 EndVersion 提到新版本，或另写一个适配本分支的新补丁。
+  - 风险：如果上游之后发布的版本 ≤ 本分支已部署的版本（当前 4.19.2），上游补丁的 EndVersion 也会 ≤ 本分支库里记录的版本，**这些补丁在本分支已升级过的库上会被跳过**。
+  - 规则：合并上游版本 X 后，把 `BackendVersion` 设为大于 X、也大于本分支任何已发布版本的纯数字版本，比如上游发布 4.19.2 后，本分支改用 4.19.3。`constants.go` 冲突时保留我方的值，再按这条规则改。逐个审计上游新增的补丁：EndVersion ≤ 本分支已部署版本的，在本分支已升级的库上不会执行，要先确认该补丁在这些库上是否必要、能否安全重复执行，再决定把 EndVersion 提到新版本，或另写一个适配本分支的新补丁。
   - **禁止上调本分支已发布补丁的 EndVersion**，尤其是 `clear_folder_storage_policy`。`applyPatches` 只比较“库中记录的最高版本”和 EndVersion，不记录哪些补丁已经跑过。把它提到新版本，会让已部署的库重新执行 `ClearStoragePolicies`，清掉用户真实的目录挂载。已发布补丁保持原来的边界；需要新的数据调整时另写新补丁。
   - 前端 `package.json` 的版本由打包脚本写入，要和后端版本一致。
 - **Pro 残留**：上游一直在社区版里留 Pro 占位（`pro: true`、`ProDialog`、`checked={false}` 的死开关、新的 `_CommunityPlaceholder` 位、指向不存在 Pro 组件的 import）。每次同步后都要检查：上游新出现的 Pro 入口，要么在本分支实现，要么删掉，不能只留着显示。
@@ -106,8 +113,8 @@ git merge upstream/master
 
 ## 5. 同步或改动后的检查清单
 1. `go build ./...`，并跑第 2 节列出的测试包。
-2. `cd assets && yarn build`，tsc 与基线对比没有新增错误。
-3. `grep -rnw "pro\|ProChip\|ProDialog" assets/src --include=*.ts --include=*.tsx` 结果为空；`grep -rn 'IsPro\|licenseKey\|"-pro"' --include=*.go .` 结果为空。
+2. `.github/scripts/tsc-check.sh` 通过，`cd assets && yarn build` 成功。
+3. `.github/scripts/pro-check.sh` 通过。
 4. 用新库启动：`/api/v4/site/ping` 返回纯数字版本号；后台全部页面和设置页里没有 Pro、升级、支付、积分、举报等字样；能正常上传网页文件。
 5. 用旧版本的库启动新代码，确认新的迁移补丁都执行了（日志里有 `Applying schema patch ...`）。再用一个已部署过本分支上一版本、并且有目录挂载策略的库启动，确认挂载仍然保留：`select count(*) from files where type=1 and storage_policy_files is not null` 升级前后一致。
 6. 改动涉及存储策略、上传、转移或权限时，回归第 3.4 节对应的不变量；改动涉及 OAuth、上传凭证或 SSE 时，用 curl 按第 3.6 节模拟一遍桌面端流程。

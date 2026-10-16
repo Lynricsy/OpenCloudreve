@@ -67,7 +67,8 @@
   - 用户组可用节点白名单，用户创建压缩/解压/离线下载任务时可选择节点（`GET /api/v4/workflow/nodes`）；
   - 用户组默认固定分享；自定义属性 `user` 类型；存储配额超出邮件通知。
 - 兼容官方桌面客户端 [cloudreve/desktop](https://github.com/cloudreve/desktop)（OAuth + PKCE、SSE 文件事件、上传凭证永不返回负载均衡策略）。
-- 版本号为 `4.14.1`；从 4.14.0 升级时会自动执行数据库补丁 `clear_folder_storage_policy`。
+- 基于上游发布版 `4.19.1`，本分支版本号为 `4.19.2`（上游源码里的版本号是过期的默认值，正式发布时按 git tag 注入）。从上游版本升级时会自动执行一次数据库补丁 `clear_folder_storage_policy`。
+- Docker 镜像由 GitHub Actions 发布到 GHCR：`ghcr.io/lynricsy/opencloudreve:latest`（版本 tag）与 `:edge`（`master` 最新提交），支持 `linux/amd64` 与 `linux/arm64`。仓库自带的 `docker-compose.yml` 已改用该镜像。
 
 ## :hammer_and_wrench: 部署
 
