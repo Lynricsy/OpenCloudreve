@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/application/constants"
@@ -125,7 +124,7 @@ func (service *SlavePingService) Test(c *gin.Context) error {
 
 	version := constants.BackendVersion
 
-	if strings.TrimSuffix(res.Data.(string), "-pro") != version {
+	if res.Data.(string) != version {
 		return serializer.NewError(serializer.CodeVersionMismatch, "Master: "+res.Data.(string)+", Slave: "+version, nil)
 	}
 

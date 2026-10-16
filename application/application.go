@@ -60,7 +60,7 @@ func (s *server) PrintBanner() {
 / /___| | (_) | |_| | (_| | | |  __/\ V /  __/
 \____/|_|\___/ \__,_|\__,_|_|  \___| \_/ \___|
 
-   V` + constants.BackendVersion + `  Commit #` + constants.LastCommit + `  Pro=` + constants.IsPro + `
+   V` + constants.BackendVersion + `  Commit #` + constants.LastCommit + `
 ================================================
 
 `)

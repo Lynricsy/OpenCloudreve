@@ -145,7 +145,6 @@ type MetricsSummary struct {
 
 type Version struct {
 	Version string `json:"version"`
-	Pro     bool   `json:"pro"`
 	Commit  string `json:"commit"`
 }
 

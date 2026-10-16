@@ -10,8 +10,7 @@ import (
 )
 
 var (
-	confPath   string
-	licenseKey string
+	confPath string
 )
 
 func init() {

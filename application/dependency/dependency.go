@@ -198,7 +198,6 @@ type dependency struct {
 	textExtractor         searcher.TextExtractor
 
 	configPath        string
-	isPro             bool
 	requiredDbVersion string
 
 	// Protects inner deps that can be reloaded at runtime.
@@ -317,7 +316,7 @@ func (d *dependency) ServerStaticFS() static.ServeFileSystem {
 		return d.serverStaticFS
 	}
 
-	sfs, err := statics.NewServerStaticFS(d.Logger(), d.Statics(), d.isPro)
+	sfs, err := statics.NewServerStaticFS(d.Logger(), d.Statics())
 	if err != nil {
 		d.panicError(err)
 	}
@@ -340,12 +339,7 @@ func (d *dependency) DBClient() *ent.Client {
 		d.rawEntClient = client
 	}
 
-	proSuffix := ""
-	if d.isPro {
-		proSuffix = "-pro"
-	}
-
-	client, err := inventory.InitializeDBClient(d.Logger(), d.rawEntClient, d.KV(), d.requiredDbVersion+proSuffix)
+	client, err := inventory.InitializeDBClient(d.Logger(), d.rawEntClient, d.KV(), d.requiredDbVersion)
 	if err != nil {
 		d.panicError(err)
 	}

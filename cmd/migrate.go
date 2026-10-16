@@ -29,7 +29,6 @@ var migrateCmd = &cobra.Command{
 		dep := dependency.NewDependency(
 			dependency.WithConfigPath(confPath),
 			dependency.WithRequiredDbVersion(constants.BackendVersion),
-			dependency.WithProFlag(constants.IsPro == "true"),
 		)
 		logger := dep.Logger()
 		logger.Info("Migrating from v3 to v4...")

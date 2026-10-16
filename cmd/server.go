@@ -14,7 +14,6 @@ import (
 
 func init() {
 	rootCmd.AddCommand(serverCmd)
-	serverCmd.PersistentFlags().StringVarP(&licenseKey, "license-key", "l", "", "License key of your Cloudreve Pro")
 }
 
 var serverCmd = &cobra.Command{
@@ -23,7 +22,6 @@ var serverCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		dep := dependency.NewDependency(
 			dependency.WithConfigPath(confPath),
-			dependency.WithProFlag(constants.IsProBool),
 			dependency.WithRequiredDbVersion(constants.BackendVersion),
 		)
 		server := application.NewServer(dep)

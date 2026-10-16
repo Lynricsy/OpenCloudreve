@@ -50,7 +50,7 @@ func (b *GinFS) Exists(prefix string, filepath string) bool {
 }
 
 // NewServerStaticFS 初始化静态资源文件
-func NewServerStaticFS(l logging.Logger, statics fs.FS, isPro bool) (static.ServeFileSystem, error) {
+func NewServerStaticFS(l logging.Logger, statics fs.FS) (static.ServeFileSystem, error) {
 	var staticFS static.ServeFileSystem
 	if util.Exists(util.DataPath(StaticFolder)) {
 		l.Info("Folder with %q already exists, it will be used to serve static files.", util.DataPath(StaticFolder))
@@ -86,9 +86,6 @@ func NewServerStaticFS(l logging.Logger, statics fs.FS, isPro bool) (static.Serv
 	}
 
 	staticName := "cloudreve-frontend"
-	if isPro {
-		staticName += "-pro"
-	}
 
 	if v.Name != staticName {
 		l.Error("Static resource version mismatch, please delete \"statics\" folder and rebuild it.")

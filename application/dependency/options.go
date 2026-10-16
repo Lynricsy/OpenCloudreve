@@ -62,13 +62,6 @@ func WithServerStaticFS(c static.ServeFileSystem) Option {
 	})
 }
 
-// WithProFlag Set if current instance is a pro version.
-func WithProFlag(c bool) Option {
-	return optionFunc(func(o *dependency) {
-		o.isPro = c
-	})
-}
-
 // WithRawEntClient Set the default raw ent client.
 func WithRawEntClient(c *ent.Client) Option {
 	return optionFunc(func(o *dependency) {

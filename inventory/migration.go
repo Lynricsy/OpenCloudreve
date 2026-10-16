@@ -619,12 +619,9 @@ func applyPatches(l logging.Logger, client *ent.Client, ctx context.Context, req
 		return err
 	}
 
-	requiredDbVersion = strings.TrimSuffix(requiredDbVersion, "-pro")
-
 	// Find the latest applied version
 	var latestAppliedVersion *semver.Version
 	for _, v := range allVersionMarks {
-		v.Name = strings.TrimSuffix(v.Name, "-pro")
 		version, err := semver.NewVersion(strings.TrimPrefix(v.Name, DBVersionPrefix))
 		if err != nil {
 			l.Warning("Failed to parse past version %s: %s", v.Name, err)

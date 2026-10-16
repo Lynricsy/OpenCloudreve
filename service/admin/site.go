@@ -87,7 +87,6 @@ func (s *SummaryService) Summary(c *gin.Context) (*HomepageSummary, error) {
 	res := &HomepageSummary{
 		Version: &Version{
 			Version: constants.BackendVersion,
-			Pro:     constants.IsProBool,
 			Commit:  constants.LastCommit,
 		},
 		SiteURls: lo.Map(dep.SettingProvider().AllSiteURLs(c), func(item *url.URL, index int) string {
