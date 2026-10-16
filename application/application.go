@@ -13,6 +13,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/application/constants"
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/ent"
+	"github.com/cloudreve/Cloudreve/v4/pkg/backup"
 	"github.com/cloudreve/Cloudreve/v4/pkg/cache"
 	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
 	"github.com/cloudreve/Cloudreve/v4/pkg/crontab"
@@ -94,6 +95,10 @@ func (s *server) Start() error {
 		if err := s.dep.CredManager().Upsert(context.Background(), credentials...); err != nil {
 			return fmt.Errorf("failed to upsert OneDrive credentials to CredManager: %w", err)
 		}
+		// Google Drive 备份的 access token 按需由刷新令牌换取
+		if err := backup.ResetCredential(context.Background(), s.dep.CredManager()); err != nil {
+			return fmt.Errorf("failed to upsert Google Drive backup credential to CredManager: %w", err)
+		}
 		crontab.Register(setting.CronTypeOauthCredRefresh, func(ctx context.Context) {
 			dep := dependency.FromContext(ctx)
 			cred := dep.CredManager()
@@ -110,11 +115,9 @@ func (s *server) Start() error {
 		s.dep.RemoteDownloadQueue(context.Background()).Start()
 
 		// Start cron jobs
-		c, err := crontab.NewCron(context.Background(), s.dep)
-		if err != nil {
+		if err := crontab.Start(context.Background(), s.dep); err != nil {
 			return err
 		}
-		c.Start()
 
 		// Start node pool
 		if _, err := s.dep.NodePool(context.Background()); err != nil {

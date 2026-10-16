@@ -3,6 +3,8 @@ package crontab
 import (
 	"context"
 	"fmt"
+	"sync"
+
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
@@ -23,6 +25,9 @@ type (
 
 var (
 	registrations []cornRegistration
+
+	runningMu sync.Mutex
+	running   *cron.Cron
 )
 
 // Register registers a cron task.
@@ -54,6 +59,25 @@ func NewCron(ctx context.Context, dep dependency.Dep) (*cron.Cron, error) {
 	}
 
 	return c, nil
+}
+
+// Start 构建并启动全部定时任务。再次调用会停止旧实例并按最新的 cron_* 设置重建，
+// 使修改执行时间后无需重启。
+func Start(ctx context.Context, dep dependency.Dep) error {
+	c, err := NewCron(ctx, dep)
+	if err != nil {
+		return err
+	}
+
+	runningMu.Lock()
+	defer runningMu.Unlock()
+	if running != nil {
+		// 只停止调度，已在执行的任务继续跑完
+		running.Stop()
+	}
+	running = c
+	c.Start()
+	return nil
 }
 
 func taskWrapper(name, config string, user *ent.User, dep dependency.Dep, task CronTaskFunc) func() {

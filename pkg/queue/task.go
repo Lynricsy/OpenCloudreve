@@ -104,6 +104,8 @@ const (
 	RelocateTaskType              = "relocate"
 	RemoteDownloadTaskType        = "remote_download"
 	ImportTaskType                = "import"
+	GDriveBackupTaskType          = "gdrive_backup"
+	GDriveRestoreTaskType         = "gdrive_restore"
 
 	FullTextIndexTaskType       = "full_text_index"
 	FullTextCopyTaskType        = "full_text_copy"
@@ -114,6 +116,7 @@ const (
 	SlaveCreateArchiveTaskType = "slave_create_archive"
 	SlaveUploadTaskType        = "slave_upload"
 	SlaveExtractArchiveType    = "slave_extract_archive"
+	SlaveGDriveBackupTaskType  = "slave_gdrive_backup"
 )
 
 func init() {

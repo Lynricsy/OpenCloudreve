@@ -39,6 +39,8 @@ func CreateTaskInSlave(s *cluster.CreateSlaveTask, c *gin.Context) (int, error) 
 		t = workflows.NewSlaveCreateArchiveTask(c, props, registry.NextID(), s.State)
 	case queue.SlaveExtractArchiveType:
 		t = workflows.NewSlaveExtractArchiveTask(c, props, registry.NextID(), s.State)
+	case queue.SlaveGDriveBackupTaskType:
+		t = workflows.NewSlaveGDriveBackupTask(c, props, registry.NextID(), s.State)
 	default:
 		return 0, serializer.NewError(serializer.CodeParamErr, "type not supported", nil)
 	}

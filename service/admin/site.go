@@ -216,6 +216,13 @@ var (
 		"siteURL":      siteUrlPreProcessor,
 		"mime_mapping": mimeMappingPreProcessor,
 		"secret_key":   secretKeyPreProcessor,
+		// Google Drive 备份
+		"gdrive_backup_encrypt":        gdriveBackupPreProcessor,
+		"gdrive_backup_key":            gdriveBackupPreProcessor,
+		"gdrive_backup_policies":       gdriveBackupPreProcessor,
+		"gdrive_backup_retention_days": gdriveBackupPreProcessor,
+		"gdrive_backup_proxy":          gdriveBackupPreProcessor,
+		"cron_gdrive_backup":           gdriveBackupPreProcessor,
 	}
 	postprocessors = map[string]SettingPostProcessor{
 		"mime_mapping":                               mimeMappingPostProcessor,
@@ -270,6 +277,10 @@ var (
 		"fts_tika_endpoint":                          tikaPostProcessor,
 		"fts_tika_exts":                              tikaPostProcessor,
 		"fts_tika_max_file_size":                     tikaPostProcessor,
+		"cron_gdrive_backup":                         gdriveBackupPostProcessor,
+		"gdrive_backup_proxy":                        gdriveBackupPostProcessor,
+		"gdrive_backup_client_id":                    gdriveBackupPostProcessor,
+		"gdrive_backup_client_secret":                gdriveBackupPostProcessor,
 	}
 )
 

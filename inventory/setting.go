@@ -558,6 +558,17 @@ var DefaultSettings = map[string]string{
 	"cron_entity_collect":                        "@every 15m",
 	"cron_trash_bin_collect":                     "@every 33m",
 	"cron_oauth_cred_refresh":                    "@every 230h",
+	"cron_gdrive_backup":                         "0 3 * * *",
+	"gdrive_backup_enabled":                      "0",
+	"gdrive_backup_client_id":                    "",
+	"gdrive_backup_client_secret":                "",
+	"gdrive_backup_refresh_token":                "",
+	"gdrive_backup_root_id":                      "",
+	"gdrive_backup_policies":                     "[]",
+	"gdrive_backup_retention_days":               "7",
+	"gdrive_backup_encrypt":                      "0",
+	"gdrive_backup_key":                          "",
+	"gdrive_backup_proxy":                        "",
 	"authn_enabled":                              "1",
 	"captcha_type":                               "normal",
 	"captcha_height":                             "60",
@@ -717,6 +728,8 @@ var DefaultSettings = map[string]string{
 var RedactedSettings = map[string]struct{}{
 	"encrypt_master_key": {},
 	"secret_key":         {},
+	// 刷新令牌由 OAuth 回调写入，设置接口不返回
+	"gdrive_backup_refresh_token": {},
 }
 
 func init() {

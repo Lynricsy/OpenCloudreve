@@ -515,15 +515,6 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 					controllers.ProcessCallback(http.StatusOK, false),
 				)
 			}
-			// Google Drive related
-			gdrive := callback.Group("googledrive")
-			{
-				// OAuth 完成
-				gdrive.GET(
-					"auth",
-					controllers.GoogleDriveOAuth,
-				)
-			}
 			// 腾讯云COS策略上传回调
 			callback.GET(
 				"cos/:sessionID/:key",
@@ -919,6 +910,43 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 						middleware.RequiredScopes(types.ScopeAdminWrite),
 						controllers.FromJSON[adminsvc.SetSettingService](adminsvc.SetSettingParamCtx{}),
 						controllers.AdminSetSettings,
+					)
+				}
+
+				// Google Drive 备份
+				backupRouter := admin.Group("backup")
+				{
+					backupRouter.GET("status", controllers.AdminBackupStatus)
+					backupRouter.POST("oauth/signin",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
+						controllers.AdminBackupOAuthURL,
+					)
+					backupRouter.POST("oauth/callback",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
+						controllers.FromJSON[adminsvc.FinishBackupOAuthService](adminsvc.FinishBackupOAuthParamCtx{}),
+						controllers.AdminFinishBackupOAuth,
+					)
+					backupRouter.DELETE("oauth",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
+						controllers.AdminDisconnectBackup,
+					)
+					backupRouter.POST("key",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
+						controllers.AdminGenerateBackupKey,
+					)
+					backupRouter.POST("run",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
+						controllers.AdminRunBackup,
+					)
+					backupRouter.GET("snapshots", controllers.AdminListBackupSnapshots)
+					backupRouter.POST("snapshots/browse",
+						controllers.FromJSON[adminsvc.BrowseBackupService](adminsvc.BrowseBackupParamCtx{}),
+						controllers.AdminBrowseBackup,
+					)
+					backupRouter.POST("restore",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
+						controllers.FromJSON[adminsvc.RestoreBackupService](adminsvc.RestoreBackupParamCtx{}),
+						controllers.AdminRestoreBackup,
 					)
 				}
 

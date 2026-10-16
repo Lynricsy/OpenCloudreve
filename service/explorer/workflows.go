@@ -557,7 +557,9 @@ func (service *ListTaskService) ListTasks(c *gin.Context) (*TaskListResponse, er
 			PageToken:           service.NextPageToken,
 			PageSize:            service.PageSize,
 		},
-		Types:  []string{queue.CreateArchiveTaskType, queue.ExtractArchiveTaskType, queue.RelocateTaskType, queue.ImportTaskType},
+		// 管理员手动发起的备份与恢复也显示在其任务列表中
+		Types: []string{queue.CreateArchiveTaskType, queue.ExtractArchiveTaskType, queue.RelocateTaskType, queue.ImportTaskType,
+			queue.GDriveBackupTaskType, queue.GDriveRestoreTaskType},
 		UserID: user.ID,
 	}
 

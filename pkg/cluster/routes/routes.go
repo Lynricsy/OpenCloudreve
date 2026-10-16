@@ -111,6 +111,16 @@ func MasterPolicyOAuthCallback(base *url.URL) *url.URL {
 	return base.ResolveReference(routes)
 }
 
+// MasterBackupOAuthCallback Google Drive 备份授权回调页面。保留站点 URL 的协议：
+// Google 只接受 https 或 localhost 的回调地址，由 Google 侧校验。
+func MasterBackupOAuthCallback(base *url.URL) *url.URL {
+	routes, err := url.Parse("/admin/backup/oauth")
+	if err != nil {
+		return nil
+	}
+	return base.ResolveReference(routes)
+}
+
 func MasterGetCredentialUrl(base, key string) *url.URL {
 	masterBase, err := url.Parse(base)
 	if err != nil {
