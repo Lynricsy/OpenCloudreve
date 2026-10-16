@@ -9,12 +9,26 @@ baseline="$root/.github/tsc-baseline.txt"
 current="$(mktemp)"
 trap 'rm -f "$current"' EXIT
 
+set +e
+output="$(cd "$root/assets" && npx tsc --noEmit -p . 2>&1)"
+tsc_status=$?
+set -e
+
+errors="$(grep "error TS" <<<"$output" || true)"
+
+# tsc 非零退出却没有任何类型诊断：说明编译器本身启动失败或崩溃，不能当作基线结果
+if [[ $tsc_status -ne 0 && -z "$errors" ]]; then
+  echo "::error::tsc 异常退出（退出码 $tsc_status），未产生类型诊断："
+  tail -n 50 <<<"$output"
+  exit 1
+fi
+
 # 去掉行列号与本机绝对路径并按字节序排序，避免行号漂移或检出目录不同造成误报
-(cd "$root/assets" && npx tsc --noEmit -p . 2>&1 || true) |
-  grep "error TS" |
-  sed -E 's/\([0-9]+,[0-9]+\)//' |
-  sed "s#${root}/assets/##g" |
-  LC_ALL=C sort >"$current"
+if [[ -n "$errors" ]]; then
+  sed -E 's/\([0-9]+,[0-9]+\)//' <<<"$errors" |
+    sed "s#${root}/assets/##g" |
+    LC_ALL=C sort >"$current"
+fi
 
 if [[ "${1:-}" == "--update" ]]; then
   cp "$current" "$baseline"
