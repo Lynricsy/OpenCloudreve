@@ -17,7 +17,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 ## 2. 构建、运行与验证
 
 - **后端编译**依赖 `application/statics/assets.zip`（`go:embed`，已 gitignore）。只需要编译时，放一个占位 zip 即可，内含 `assets/build/index.html`。本机没有 `zip` 命令，用 Python 的 `zipfile` 生成。
-- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.4`）；CI 发布 tag 时会强制要求 tag 与常量一致。新增 `DefaultSettings` 键时必须同时提升版本号：`migrateDefaultSettings` 只在库里没有当前版本标记时运行，而 `SettingClient.Set` 只更新已存在的行，缺行时设置接口会静默不生效。
+- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.5`）；CI 发布 tag 时会强制要求 tag 与常量一致。新增 `DefaultSettings` 键时必须同时提升版本号：`migrateDefaultSettings` 只在库里没有当前版本标记时运行，而 `SettingClient.Set` 只更新已存在的行，缺行时设置接口会静默不生效。
 - **正式打包**：`.build/build-assets.sh <版本号>`。这个脚本会把前端 `package.json` 的版本改成传入的版本号，需要系统有 `zip` 命令。如果直接 `yarn build`，启动时会报 `Static resource version mismatch`，页面仍能用。版本号必须等于 `constants.BackendVersion`。
 - **前端**：用 `yarn`（`npm i -g yarn@1`）。`assets/` 有 husky pre-commit，会对暂存文件跑 prettier（lint-staged）。
 - **类型检查**：`.github/scripts/tsc-check.sh`（需先在 `assets/` 里 `yarn install`）。上游本身就带一批 TS 错误（分叉时 127 条，现在 115 条），基线存在 `.github/tsc-baseline.txt`，脚本会去掉行列号、按字节序排序后对比，出现基线之外的错误就失败。`vite build` 不做类型检查，所以 `yarn build` 通过不代表类型正确。错误减少，或者因为权限位增减导致 `GroupPermission` 类型字面量的报错文本变化时，确认没有真正新增错误后，运行 `.github/scripts/tsc-check.sh --update` 更新基线。
@@ -111,8 +111,8 @@ git merge upstream/master
 注意事项：
 - **版本号和迁移补丁（最容易出错）**：
   - 机制：只有当库里没有 `db_version_<BackendVersion>` 这一行时才会跑迁移；补丁只在“已应用的最高版本 < 补丁 EndVersion”时执行。
-  - 风险：如果上游之后发布的版本 ≤ 本分支已部署的版本（当前 4.19.4），上游补丁的 EndVersion 也会 ≤ 本分支库里记录的版本，**这些补丁在本分支已升级过的库上会被跳过**。
-  - 规则：合并上游版本 X 后，把 `BackendVersion` 设为大于 X、也大于本分支任何已发布版本的纯数字版本，比如上游发布 4.19.4 后，本分支改用 4.19.5。`constants.go` 冲突时保留我方的值，再按这条规则改。逐个审计上游新增的补丁：EndVersion ≤ 本分支已部署版本的，在本分支已升级的库上不会执行，要先确认该补丁在这些库上是否必要、能否安全重复执行，再决定把 EndVersion 提到新版本，或另写一个适配本分支的新补丁。
+  - 风险：如果上游之后发布的版本 ≤ 本分支已部署的版本（当前 4.19.5），上游补丁的 EndVersion 也会 ≤ 本分支库里记录的版本，**这些补丁在本分支已升级过的库上会被跳过**。
+  - 规则：合并上游版本 X 后，把 `BackendVersion` 设为大于 X、也大于本分支任何已发布版本的纯数字版本，比如上游发布 4.19.5 后，本分支改用 4.19.6。`constants.go` 冲突时保留我方的值，再按这条规则改。逐个审计上游新增的补丁：EndVersion ≤ 本分支已部署版本的，在本分支已升级的库上不会执行，要先确认该补丁在这些库上是否必要、能否安全重复执行，再决定把 EndVersion 提到新版本，或另写一个适配本分支的新补丁。
   - **禁止上调本分支已发布补丁的 EndVersion**，尤其是 `clear_folder_storage_policy`。`applyPatches` 只比较“库中记录的最高版本”和 EndVersion，不记录哪些补丁已经跑过。把它提到新版本，会让已部署的库重新执行 `ClearStoragePolicies`，清掉用户真实的目录挂载。已发布补丁保持原来的边界；需要新的数据调整时另写新补丁。
   - 前端 `package.json` 的版本由打包脚本写入，要和后端版本一致。
 - **Pro 残留**：上游一直在社区版里留 Pro 占位（`pro: true`、`ProDialog`、`checked={false}` 的死开关、新的 `_CommunityPlaceholder` 位、指向不存在 Pro 组件的 import）。每次同步后都要检查：上游新出现的 Pro 入口，要么在本分支实现，要么删掉，不能只留着显示。
@@ -138,6 +138,7 @@ git merge upstream/master
 - 已知遗留：WebDAV 上传超额不会发配额邮件；分享失效后，用户组默认固定的那一项仍会显示；管理员在他人空间打开挂载策略对话框时，列出的是管理员自己组的可用策略（后端会校验，越权会被拒绝）。
 - 已知遗留（Google Drive 备份）：
   - 恢复时单个文件下载中断不会续传，整个文件记为失败，需要重新发起恢复。
-  - 首次全量备份受 Google 每账号每天 750 GB 的上传限额约束；超限的文件记为失败，下次运行时重试。
+  - 首次全量备份可能受 Google 的上传或 API 限额影响（具体额度因账号类型而异，以 Drive 返回的错误和 Cloud 控制台配额为准）；因限额失败的文件记为失败，下次运行时重试。
+  - Drive 新建文件的请求体只能带 `name`/`mimeType`/`parents`/`appProperties`（`driveCreateMeta`）。不要复用响应结构 `DriveFile`：空 `id` 会被 Drive 以 400 `fileIdNotUsable` 拒绝。测试用的假 Drive（`fakedrive_test.go`）对此做了同样的校验。
   - 上游 `SetSetting` 按处理器的函数类型名去重，所有处理器的类型名都相同，所以一次提交里即使涉及多种前置/后置处理器，也只会执行其中一个。备份页面只提交自己的设置项，不受影响；其他设置页签混合提交时可能漏执行处理器。
 - 语言包缓存：前端把语言包缓存在 localStorage，缓存版本是构建时 `public/locales` 的内容哈希（`vite.config.ts` 的 `__LOCALES_HASH__`）。不要去掉这个版本，否则升级后新增的文案会显示成键名，`returnObjects` 数组还会让页面崩溃。
