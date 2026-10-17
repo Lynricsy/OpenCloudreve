@@ -70,6 +70,9 @@ const (
 	AuthorizationHeader = "Authorization"
 	TokenHeaderPrefix   = "Bearer "
 	RevokeTokenPrefix   = "jwt_revoke_"
+	// grantIssueLeeway 比较刷新令牌签发时间与授权创建时间时的容差：NotBefore 截断到秒，
+	// MySQL datetime 会把 created_at 四舍五入到秒，两者最多相差 1.5 秒。
+	grantIssueLeeway = 2 * time.Second
 )
 
 type Claims struct {
@@ -172,6 +175,12 @@ func (t *tokenAuth) Refresh(ctx context.Context, refreshToken string) (*Token, e
 
 		// Consented scopes must be a subset of the client's scopes
 		if !ValidateScopes(claims.Scopes, client.Edges.Grants[0].Scopes) {
+			return nil, ErrInvalidRefreshToken
+		}
+
+		// 撤销授权会物理删除授权记录，重新授权会新建一条；签发早于当前授权记录的刷新令牌
+		// 属于已撤销的授权，不能借重新授权复活。
+		if claims.NotBefore == nil || claims.NotBefore.Add(grantIssueLeeway).Before(client.Edges.Grants[0].CreatedAt) {
 			return nil, ErrInvalidRefreshToken
 		}
 

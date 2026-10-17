@@ -93,6 +93,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 - **版本**：`/site/ping` 返回的版本必须 ≥ 4.12.0，并且只能是纯数字点分格式（客户端按 `.` 切分后逐段比较数字），**不要**加 `-xxx` 之类的后缀。
 - **官方 CLI（`cloudreve/cli`，有 macOS 版）**：要求服务端版本 ≥ 4.17.0 且 < 5。CLI 1.0.0 已在 4.19.2 上实测通过：密码登录、`ls`、上传、`cat`、`stat` 都正常。
 - **OAuth**：内置 client `393a1839-f52e-498e-9972-e77cc2241eee`，在 `inventory/migration.go` 里写入；回调地址 `/callback/desktop`，PKCE S256；刷新令牌走 `POST /session/token/refresh`。
+- **撤销授权**（`DELETE /session/oauth/grant/:app_id`）：`oauth_grants` 是物理删除（软删除行会占住 `(user_id, client_id)` 唯一索引，导致重新授权后刷新令牌永久失效，见 issue #1）；`UpsertGrant` 会先清掉旧版本留下的软删除行。重新授权总是新建授权记录，`tokenAuth.Refresh` 拒绝 `NotBefore` 早于当前授权 `created_at` 超过 2 秒的刷新令牌，所以撤销前签发的令牌不会因重新授权复活；例外是新授权创建前 2 秒内签发的令牌仍可刷新（容差用于抵消 `NotBefore` 截断到秒和 MySQL datetime 四舍五入）。同一 client 被多端共用时，对仍有效的授权重新同意不会新建记录，但会用本次请求的 scopes 覆盖授权的 scopes，其他端令牌的 scopes 若超出新范围，刷新时会被拒绝。
 - **其他契约**：SSE `GET /file/events`（要求 `X-Cr-Client-Id` 为 UUID）；`ExtendedInfo.storage_policy_inherited` 是必填字段；上传凭证不得是 LB 策略。
 - **已知不一致**：客户端期望 `GET /user/setting` 返回 `credit` 字段（Pro 积分残留），我们没有补，客户端目前也不调用这个接口。
 
