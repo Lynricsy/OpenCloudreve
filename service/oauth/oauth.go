@@ -255,16 +255,6 @@ func (s *DeleteOAuthGrantService) Delete(c *gin.Context) error {
 	user := inventory.UserFromContext(c)
 	oAuthClient := dep.OAuthClientClient()
 
-	// 先记下撤销时间再删除授权：撤销前签发的刷新令牌即使在重新授权后也不能再刷新。
-	// 记录的保留期需覆盖该客户端刷新令牌的有效期（客户端可单独设置更长的有效期）。
-	ttl := dep.SettingProvider().TokenAuth(c).RefreshTokenTTL
-	if app, err := oAuthClient.GetByGUID(c, s.AppID); err == nil && app.Props != nil {
-		ttl = max(ttl, time.Duration(app.Props.RefreshTokenTTL)*time.Second)
-	}
-	if err := auth.RevokeOAuthGrant(dep.KV(), user.ID, s.AppID, ttl); err != nil {
-		return serializer.NewError(serializer.CodeCacheOperation, "Failed to revoke OAuth tokens", err)
-	}
-
 	// Delete the grant - the method validates that the grant belongs to the current user
 	deleted, err := oAuthClient.DeleteGrantByUserAndClientGUID(c, user.ID, s.AppID)
 	if err != nil {
