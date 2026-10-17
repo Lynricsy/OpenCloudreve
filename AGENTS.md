@@ -83,7 +83,8 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
   - 恢复使用目标用户自己的 FileManager 写入（容量和策略按目标用户计算）。同名文件跳过不覆盖。读到流末尾时校验 sha256，不一致则让上传失败。
   - 同一时间只允许一个备份任务（`GDriveTaskPending`）。`crontab.Start` 可以重复调用；修改 `cron_gdrive_backup` 后由设置后处理器重建 cron，立即生效。
   - 运行记录：两种任务的私有状态都带有 `events`（`{t,l,c,p}`，最多 500 条，超出后丢弃最旧的并累计 `events_dropped`），备份任务还记录 `trigger`（`cron`/`manual`，同时写入 summary）。前端“备份 → 运行记录”页签通过现有的 `/admin/queue` 接口读取，按 `backup.events.<code>` 翻译，并用 `started`/`scan_done`/`manifest_started`/`snapshot_uploaded`/`finished` 推算阶段时间线。新增或改名事件 code 时，前端三种语言的文案要同步改。`task_failed` 只在任务最终失败时由 `OnError` 写入，可重试的错误不记录。
-  - 前端页面（`Admin/Backup/Backup.tsx`）分为六个横向页签：运行状态、Google 账号（含代理）、备份设置、加密、快照与恢复、运行记录，URL 参数为 `?tab=`，OAuth 回调结束后回到 `?tab=account`。备份状态由页面统一获取，任务运行中每 5 秒轮询一次，结果分发给各页签。设置类页签各自用一个 `SettingsWrapper` 读取和保存。传给它的 `settings` 数组必须是模块级常量：`SettingsWrapper` 以这个数组的引用作为 effect 依赖，如果写成内联数组，状态轮询一刷新就会重新拉取设置，并丢掉还没保存的修改。
+  - 前端页面（`Admin/Backup/Backup.tsx`）分为六个横向页签：运行状态、Google 账号（含代理）、备份设置、加密、快照与恢复、运行记录，URL 参数为 `?tab=`，OAuth 回调结束后回到 `?tab=account`。备份状态由页面统一获取，任务运行中每 5 秒轮询一次，结果分发给各页签。账号和加密页签通过 `SettingsWrapper` 的 `onSaved` 在保存后刷新状态。设置类页签各自用一个 `SettingsWrapper` 读取和保存。传给它的 `settings` 数组必须是模块级常量：`SettingsWrapper` 以这个数组的引用作为 effect 依赖，如果写成内联数组，状态轮询一刷新就会重新拉取设置，并丢掉还没保存的修改。
+  - 页签内容统一使用 `Admin/Backup/BackupUi.tsx` 中的组件：`BackupCard`（描边卡片）、`BackupCardHeader`（色调图标、标题、副标题、操作区）、`StatTile`（统计块）、`ToneIcon`。颜色只取主题语义色（`primary`/`success`/`warning`/`error`），并用 `alpha` 生成浅色底，这样深色模式下也能正常显示，不要写死色值。页签枚举 `BackupPageTab` 也定义在这个文件里，避免与 `Backup.tsx` 循环引用。
 
 ### 3.5 新增与改动的 API
 `PATCH /file/policy {uri, policy_id}`（`policy_id` 传 `""` 表示改回继承）、`GET /user/setting/policies`（LB 策略带 `children`/`weight`）、`POST /workflow/relocate {src[], dst_policy_id}`、`GET /workflow/nodes?capability=`；压缩、解压、离线下载接口新增可选参数 `node_id`；`extended_info.storage_policy_inherited`；`/site/ping` 只返回版本号。管理员备份接口位于 `/admin/backup/*`：`GET status`、`POST oauth/signin`、`POST oauth/callback {code,state}`、`DELETE oauth`、`POST key`、`POST run`、`GET snapshots`、`POST snapshots/browse {snapshot_id, uid?, path?}`、`POST restore {snapshot_id, items[{uid,path}], target_uid?, target_dir}`。前端页面是后台侧边栏的“备份”（`/admin/backup`，组件在 `Admin/Backup/`，设置项仍经 `SettingsWrapper` 读写），回调页是 `/admin/backup/oauth`；上游遗留的死路由 `/callback/googledrive/auth` 已删除。
@@ -139,6 +140,7 @@ git merge upstream/master
 - 已知遗留：WebDAV 上传超额不会发配额邮件；分享失效后，用户组默认固定的那一项仍会显示；管理员在他人空间打开挂载策略对话框时，列出的是管理员自己组的可用策略（后端会校验，越权会被拒绝）。
 - 已知遗留（Google Drive 备份）：
   - 恢复时单个文件下载中断不会续传，整个文件记为失败，需要重新发起恢复。
+  - “断开”（`DisconnectBackup`）只清空本地保存的刷新令牌，不会调用 Google 的撤销接口，旧令牌在 Google 侧仍然有效。令牌泄露时，要到 Google 账号的第三方应用授权管理里撤销授权，或者调用 Google 的令牌撤销端点。
   - 首次全量备份可能受 Google 的上传或 API 限额影响（具体额度因账号类型而异，以 Drive 返回的错误和 Cloud 控制台配额为准）；因限额失败的文件记为失败，下次运行时重试。
   - Drive 新建文件的请求体只能带 `name`/`mimeType`/`parents`/`appProperties`（`driveCreateMeta`）。不要复用响应结构 `DriveFile`：空 `id` 会被 Drive 以 400 `fileIdNotUsable` 拒绝。测试用的假 Drive（`fakedrive_test.go`）对此做了同样的校验。
   - 上游 `SetSetting` 按处理器的函数类型名去重，所有处理器的类型名都相同，所以一次提交里即使涉及多种前置/后置处理器，也只会执行其中一个。备份页面只提交自己的设置项，不受影响；其他设置页签混合提交时可能漏执行处理器。
