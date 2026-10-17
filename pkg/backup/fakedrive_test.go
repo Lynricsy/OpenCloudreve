@@ -91,8 +91,10 @@ func (fd *fakeDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/drive/v3/files" && r.Method == http.MethodGet:
 		fd.list(w, r.URL.Query().Get("q"))
 	case r.URL.Path == "/drive/v3/files" && r.Method == http.MethodPost:
-		var meta DriveFile
-		_ = json.NewDecoder(r.Body).Decode(&meta)
+		meta, ok := decodeCreateMeta(w, r)
+		if !ok {
+			return
+		}
 		meta.ID, meta.CreatedTime = fd.id(), time.Now()
 		fd.files[meta.ID] = &fakeFile{meta: meta}
 		writeJSON(w, 200, meta)
@@ -113,8 +115,10 @@ func (fd *fakeDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, f.meta)
 		}
 	case r.URL.Path == "/upload/drive/v3/files" && r.Method == http.MethodPost:
-		var meta DriveFile
-		_ = json.NewDecoder(r.Body).Decode(&meta)
+		meta, ok := decodeCreateMeta(w, r)
+		if !ok {
+			return
+		}
 		sid := fd.id()
 		fd.sessions[sid] = &fakeSession{meta: meta}
 		w.Header().Set("Location", "https://www.googleapis.com/upload/drive/v3/files?upload_id="+sid)
@@ -124,6 +128,31 @@ func (fd *fakeDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "unexpected "+r.Method+" "+r.URL.String(), 400)
 	}
+}
+
+// decodeCreateMeta 按真实 Drive 的行为校验新建文件的元数据：请求体带 id（哪怕是空串）会返回
+// 400 fileIdNotUsable，带 createdTime 会改写文件创建时间，因此只接受客户端应当发送的字段。
+func decodeCreateMeta(w http.ResponseWriter, r *http.Request) (DriveFile, bool) {
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		writeJSON(w, 400, map[string]any{"error": map[string]any{"message": err.Error()}})
+		return DriveFile{}, false
+	}
+	for k := range raw {
+		switch k {
+		case "name", "mimeType", "parents", "appProperties":
+		default:
+			writeJSON(w, 400, map[string]any{"error": map[string]any{
+				"message": "unexpected field " + k + " in create request",
+				"errors":  []map[string]string{{"reason": "fileIdNotUsable"}},
+			}})
+			return DriveFile{}, false
+		}
+	}
+	var meta DriveFile
+	b, _ := json.Marshal(raw)
+	_ = json.Unmarshal(b, &meta)
+	return meta, true
 }
 
 var rangeRe = regexp.MustCompile(`^bytes (\*|(\d+)-(\d+))/(\*|\d+)$`)

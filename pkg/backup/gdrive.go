@@ -51,6 +51,15 @@ type (
 		AppProperties map[string]string `json:"appProperties,omitempty"`
 	}
 
+	// driveCreateMeta 新建文件/目录时的请求体。不能复用 DriveFile：它的 id 即使为空也会被序列化，
+	// Drive 会以 400 fileIdNotUsable 拒绝；createdTime 的零值同样会被发送。
+	driveCreateMeta struct {
+		Name          string            `json:"name"`
+		MimeType      string            `json:"mimeType,omitempty"`
+		Parents       []string          `json:"parents,omitempty"`
+		AppProperties map[string]string `json:"appProperties,omitempty"`
+	}
+
 	// DriveAbout 账号与空间信息。
 	DriveAbout struct {
 		User struct {
@@ -370,7 +379,7 @@ func (c *DriveClient) List(ctx context.Context, q string, fn func(*DriveFile) er
 
 // CreateFolder 创建目录。
 func (c *DriveClient) CreateFolder(ctx context.Context, name, parent string, props map[string]string) (*DriveFile, error) {
-	meta := &DriveFile{Name: name, MimeType: folderMime, AppProperties: props}
+	meta := &driveCreateMeta{Name: name, MimeType: folderMime, AppProperties: props}
 	if parent != "" {
 		meta.Parents = []string{parent}
 	}
@@ -400,7 +409,7 @@ func (c *DriveClient) Download(ctx context.Context, id string) (io.ReadCloser, e
 
 // Upload 以断点续传方式上传 r 的全部内容（长度事先未知）。每个分块失败后会查询服务端已接收的偏移并续传。
 func (c *DriveClient) Upload(ctx context.Context, name, parent string, props map[string]string, r io.Reader) (*DriveFile, error) {
-	meta, err := json.Marshal(&DriveFile{Name: name, Parents: []string{parent}, AppProperties: props})
+	meta, err := json.Marshal(&driveCreateMeta{Name: name, Parents: []string{parent}, AppProperties: props})
 	if err != nil {
 		return nil, err
 	}
