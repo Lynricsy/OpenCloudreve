@@ -70,6 +70,8 @@ const (
 	AuthorizationHeader = "Authorization"
 	TokenHeaderPrefix   = "Bearer "
 	RevokeTokenPrefix   = "jwt_revoke_"
+	// OAuthGrantRevokePrefix 记录用户撤销某 OAuth 客户端授权的 Unix 秒级时间，键为 <前缀><uid>_<client GUID>
+	OAuthGrantRevokePrefix = "oauth_grant_revoke_"
 )
 
 type Claims struct {
@@ -173,6 +175,13 @@ func (t *tokenAuth) Refresh(ctx context.Context, refreshToken string) (*Token, e
 		// Consented scopes must be a subset of the client's scopes
 		if !ValidateScopes(claims.Scopes, client.Edges.Grants[0].Scopes) {
 			return nil, ErrInvalidRefreshToken
+		}
+
+		// 撤销授权后重新授权会新建授权记录；撤销前签发的刷新令牌不能借此复活
+		if revokedAt, ok := t.kv.Get(oAuthGrantRevokeKey(expectedUser.ID, claims.ClientID)); ok {
+			if ts, ok := revokedAt.(int64); ok && (claims.NotBefore == nil || claims.NotBefore.Unix() <= ts) {
+				return nil, ErrInvalidRefreshToken
+			}
 		}
 
 		// Update last used at for the grant
@@ -294,6 +303,16 @@ func (t *tokenAuth) Issue(ctx context.Context, args *IssueTokenArgs) (*Token, er
 // to detect refresh token revocation after user changed password.
 func (t *tokenAuth) hashUserState(ctx context.Context, u *ent.User) [32]byte {
 	return sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%s", u.Email, u.Password, t.s.SiteBasic(ctx).ID)))
+}
+
+// RevokeOAuthGrant 记录用户撤销 OAuth 客户端授权的时间，使此前签发的刷新令牌在之后重新授权时仍然无效。
+// ttl 应不短于该客户端刷新令牌的有效期，过期后旧令牌本身也已失效。
+func RevokeOAuthGrant(kv cache.Driver, uid int, clientGUID string, ttl time.Duration) error {
+	return kv.Set(oAuthGrantRevokeKey(uid, clientGUID), time.Now().Unix(), int((ttl + 10*time.Second).Seconds()))
+}
+
+func oAuthGrantRevokeKey(uid int, clientGUID string) string {
+	return fmt.Sprintf("%s%d_%s", OAuthGrantRevokePrefix, uid, clientGUID)
 }
 
 // ValidateScopes checks if all requested scopes are a subset of the allowed scopes.

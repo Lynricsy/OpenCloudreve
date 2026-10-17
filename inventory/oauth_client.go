@@ -9,6 +9,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/oauthclient"
 	"github.com/cloudreve/Cloudreve/v4/ent/oauthgrant"
+	"github.com/cloudreve/Cloudreve/v4/ent/schema"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
 	"github.com/cloudreve/Cloudreve/v4/pkg/util"
@@ -98,6 +99,14 @@ func (c *oauthClientClient) GetByGUIDWithGrants(ctx context.Context, guid string
 }
 
 func (c *oauthClientClient) UpsertGrant(ctx context.Context, userID, clientID int, scopes []string) error {
+	// 旧版本撤销授权是软删除，残留行仍占着 (user_id, client_id) 唯一索引，upsert 只更新 scopes，
+	// deleted_at 保持非空，刷新令牌时查不到授权。先物理删除残留行，再按正常流程插入。
+	if _, err := c.client.OAuthGrant.Delete().
+		Where(oauthgrant.UserID(userID), oauthgrant.ClientID(clientID), oauthgrant.DeletedAtNotNil()).
+		Exec(schema.SkipSoftDelete(ctx)); err != nil {
+		return fmt.Errorf("failed to purge revoked OAuth grant: %w", err)
+	}
+
 	return c.client.OAuthGrant.Create().
 		SetUserID(userID).
 		SetClientID(clientID).
@@ -136,10 +145,10 @@ func (c *oauthClientClient) DeleteGrantByUserAndClientGUID(ctx context.Context, 
 		return false, fmt.Errorf("failed to get OAuth client: %w", err)
 	}
 
-	// Delete the grant for this user and client
+	// 授权记录没有回收站语义，直接物理删除；同时清掉旧版本软删除留下的残留行
 	deleted, err := c.client.OAuthGrant.Delete().
 		Where(oauthgrant.UserID(userID), oauthgrant.ClientID(client.ID)).
-		Exec(ctx)
+		Exec(schema.SkipSoftDelete(ctx))
 	if err != nil {
 		return false, fmt.Errorf("failed to delete OAuth grant: %w", err)
 	}
@@ -238,10 +247,10 @@ func (c *oauthClientClient) Update(ctx context.Context, client *ent.OAuthClient)
 }
 
 func (c *oauthClientClient) Delete(ctx context.Context, id int) error {
-	// Delete all grants first
+	// Delete all grants first（物理删除，原因同 DeleteGrantByUserAndClientGUID）
 	_, err := c.client.OAuthGrant.Delete().
 		Where(oauthgrant.ClientID(id)).
-		Exec(ctx)
+		Exec(schema.SkipSoftDelete(ctx))
 	if err != nil {
 		return fmt.Errorf("failed to delete OAuth grants: %w", err)
 	}
