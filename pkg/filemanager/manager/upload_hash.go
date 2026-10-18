@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"hash"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs"
+	"github.com/cloudreve/Cloudreve/v4/pkg/util"
 )
 
 // 上传时流式计算 SHA-256。
@@ -81,9 +84,11 @@ func (a *streamHashAttempt) finish(ok bool) {
 }
 
 // beginStreamHash 为本段上传数据开始流式哈希；不满足条件时返回 nil。
+// 只用于本机策略：完成时要核对落盘文件的大小（见 hashForNewEntity），从机策略的中转上传无法在主机核对，交给任务计算。
 func (m *manager) beginStreamHash(session *fs.UploadSession, req *fs.UploadRequest, policy *ent.StoragePolicy) *streamHashAttempt {
 	if m.stateless || session == nil || session.Props == nil || session.Importing || req.File == nil ||
-		req.ImportFrom != nil || req.Props == nil || req.Props.ClientSideEncrypted || !HashComputablePolicy(policy) ||
+		req.ImportFrom != nil || req.Props == nil || req.Props.ClientSideEncrypted ||
+		policy == nil || policy.Type != types.PolicyTypeLocal ||
 		(session.Props.EntityType != nil && *session.Props.EntityType != types.EntityTypeVersion) {
 		return nil
 	}
@@ -163,7 +168,7 @@ func (m *manager) hashForNewEntity(ctx context.Context, session *fs.UploadSessio
 	}
 
 	fc := m.dep.FileClient()
-	if sum != "" {
+	if sum != "" && localFileSizeIs(session.Props.SavePath, session.Props.Size) {
 		err := fc.SetEntitySha256(ctx, session.EntityID, sum)
 		if err == nil {
 			return
@@ -179,4 +184,12 @@ func (m *manager) hashForNewEntity(ctx context.Context, session *fs.UploadSessio
 	if _, err := m.QueueEntityHash(ctx, []*ent.Entity{e}); err != nil {
 		m.l.Warning("Failed to queue hash task for entity %d: %s", session.EntityID, err)
 	}
+}
+
+// localFileSizeIs 核对本机策略落盘文件的大小。本机驱动写入时不截断已有文件（分片可能乱序到达），
+// 覆盖同一物理路径上更长的旧文件时会留下旧内容的尾部，这时流式结果与实际内容不符，必须放弃。
+// 路径解析与本机驱动 Put 保持一致。
+func localFileSizeIs(savePath string, size int64) bool {
+	info, err := os.Stat(util.RelativePath(filepath.FromSlash(savePath)))
+	return err == nil && info.Mode().IsRegular() && info.Size() == size
 }

@@ -158,3 +158,36 @@ func TestStreamHashSkipsClientSideEncrypted(t *testing.T) {
 		t.Fatal("client-side encrypted upload must not be hashed")
 	}
 }
+
+func TestUploadWriteGate(t *testing.T) {
+	s := newStreamSession("gate", 3)
+
+	release, err := admitUploadWrite(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 完成会话要等进行中的写入结束
+	closed := make(chan func())
+	go func() { closed <- closeUploadWrites(s) }()
+	select {
+	case <-closed:
+		t.Fatal("close must wait for the in-flight write")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	reopen := <-closed
+
+	// 完成后迟到的写入被拒绝
+	if _, err := admitUploadWrite(s); err == nil {
+		t.Fatal("write after completion must be rejected")
+	}
+
+	// 完成失败时恢复写入
+	reopen()
+	release, err = admitUploadWrite(s)
+	if err != nil {
+		t.Fatalf("write should be admitted after reopen: %s", err)
+	}
+	release()
+}

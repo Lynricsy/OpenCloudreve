@@ -155,6 +155,12 @@ func (t *EntityHashTask) run(ctx context.Context, dep dependency.Dep) (task.Stat
 		todo = append(todo, e)
 	}
 
+	// 已得出结论或已交给其他任务的实体不再属于本任务：从状态中移除，之后的轮询与重派都不会再碰它们
+	keep := lo.Map(todo, func(e *ent.Entity, _ int) int { return e.ID })
+	t.state.EntityIDs = keep
+	t.state.Dispatched = lo.Intersect(t.state.Dispatched, keep)
+	t.unsettled = keep
+
 	if len(requeue) > 0 {
 		if _, err := fm.QueueEntityHash(ctx, requeue); err != nil {
 			t.l.Warning("Failed to requeue relocated entities for hashing: %s", err)
@@ -162,12 +168,10 @@ func (t *EntityHashTask) run(ctx context.Context, dep dependency.Dep) (task.Stat
 	}
 
 	if t.state.NodeID == 0 {
-		t.unsettled = lo.Map(todo, func(e *ent.Entity, _ int) int { return e.ID })
 		return t.hashOnMaster(ctx, fm, todo)
 	}
 
 	if t.state.SlaveTaskID == 0 {
-		t.unsettled = lo.Map(todo, func(e *ent.Entity, _ int) int { return e.ID })
 		return t.dispatch(ctx, dep, todo)
 	}
 
@@ -379,6 +383,8 @@ func (t *EntityHashTask) poll(ctx context.Context, dep dependency.Dep, entities 
 	case task.StatusError, task.StatusCanceled:
 		return t.lost(ctx, dep, entities, fmt.Errorf("slave task failed: %s", summary.Error))
 	default:
+		// 只统计连续的轮询失败
+		t.state.PollErrors = 0
 		t.ResumeAfter(entityHashPollInterval)
 		return task.StatusSuspending, nil
 	}

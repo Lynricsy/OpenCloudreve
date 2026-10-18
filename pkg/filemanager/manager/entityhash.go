@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
@@ -124,10 +125,17 @@ func (m *manager) EntityHash(ctx context.Context, e *ent.Entity, policy *ent.Sto
 	return EntityHash{Status: HashStatusMissing}
 }
 
+// entityHashQueueMu 让“检查是否已排队”与“写入排队标记并入队”成为一个整体，避免并发请求为同一实体重复建任务。
+// 前提是主机只有一个进程。
+var entityHashQueueMu sync.Mutex
+
 func (m *manager) QueueEntityHash(ctx context.Context, entities []*ent.Entity) ([]int, error) {
 	if m.stateless || m.user == nil {
 		return nil, fmt.Errorf("entity hash can only be queued on master with a user")
 	}
+
+	entityHashQueueMu.Lock()
+	defer entityHashQueueMu.Unlock()
 
 	// 按节点分组：0 为主机本地策略，其余为从机节点 ID
 	groups := make(map[int][]int)
@@ -179,11 +187,18 @@ func (m *manager) queueEntityHashTask(ctx context.Context, node int, ids []int) 
 		return fmt.Errorf("failed to create entity hash task: %w", err)
 	}
 
-	keys := lo.Map(ids, func(id int, _ int) string { return fmt.Sprint(id) })
-	for _, key := range keys {
+	keys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		key := fmt.Sprint(id)
 		if err := m.kv.Set(EntityHashQueuedKey+key, true, entityHashQueuedTTL); err != nil {
+			// 任务还没入队，已写入的标记没有任务会清除，必须撤销。
+			// 注意 Delete 不带 key 时会删除整个前缀，所以只在确有已写入的标记时调用
+			if len(keys) > 0 {
+				_ = m.kv.Delete(EntityHashQueuedKey, keys...)
+			}
 			return fmt.Errorf("failed to mark entity hash queued: %w", err)
 		}
+		keys = append(keys, key)
 	}
 
 	if err := m.dep.IoIntenseQueue(ctx).QueueTask(ctx, t); err != nil {

@@ -49,6 +49,8 @@ func (f *fileClient) SetEntitySha256(ctx context.Context, id int, sum string) er
 }
 
 // ownFilePredicates 限定用户“我的文件”下的普通文件：回收站中的文件没有父目录，分享给我的是符号链接。
+// 已删除目录中的文件仍保留父目录，这里排除不了：查找结果由调用方按路径再过滤；
+// 覆盖统计会把它们也算进去，但它们不在查找范围内，只会让 computable/unsupported 偏大，结论偏保守。
 func ownFilePredicates(ownerID int) []predicate.File {
 	return []predicate.File{
 		file.OwnerID(ownerID),
@@ -58,16 +60,32 @@ func ownFilePredicates(ownerID int) []predicate.File {
 	}
 }
 
-// primaryEntityWhere 限定主实体满足给定条件的文件。
-func primaryEntityWhere(cond func(t *sql.SelectTable) *sql.Predicate) predicate.File {
+func versionEntityConds(t *sql.SelectTable, cond *sql.Predicate) *sql.Predicate {
+	return sql.And(
+		sql.IsNull(t.C(entity.FieldDeletedAt)),
+		sql.EQ(t.C(entity.FieldType), int(types.EntityTypeVersion)),
+		cond,
+	)
+}
+
+// primaryEntityIn 限定主实体满足给定条件的文件，条件本身要有选择性（如按 sha256 索引查找）。
+func primaryEntityIn(cond func(t *sql.SelectTable) *sql.Predicate) predicate.File {
 	return func(s *sql.Selector) {
 		t := sql.Table(entity.Table)
-		sub := sql.Select(t.C(entity.FieldID)).From(t).Where(sql.And(
-			sql.IsNull(t.C(entity.FieldDeletedAt)),
-			sql.EQ(t.C(entity.FieldType), int(types.EntityTypeVersion)),
-			cond(t),
-		))
+		sub := sql.Select(t.C(entity.FieldID)).From(t).Where(versionEntityConds(t, cond(t)))
 		s.Where(sql.In(s.C(file.FieldPrimaryEntity), sub))
+	}
+}
+
+// primaryEntityExists 同上，但按主键逐行关联主实体，用于条件不具选择性的统计，避免扫描所有用户的实体。
+func primaryEntityExists(cond func(t *sql.SelectTable) *sql.Predicate) predicate.File {
+	return func(s *sql.Selector) {
+		t := sql.Table(entity.Table)
+		sub := sql.Select(t.C(entity.FieldID)).From(t).Where(versionEntityConds(t, sql.And(
+			sql.ColumnsEQ(t.C(entity.FieldID), s.C(file.FieldPrimaryEntity)),
+			cond(t),
+		)))
+		s.Where(sql.Exists(sub))
 	}
 }
 
@@ -83,7 +101,7 @@ func (f *fileClient) FindOwnFilesBySha256(ctx context.Context, ownerID int, sums
 
 	files, err := f.client.File.Query().
 		Where(ownFilePredicates(ownerID)...).
-		Where(primaryEntityWhere(func(t *sql.SelectTable) *sql.Predicate {
+		Where(primaryEntityIn(func(t *sql.SelectTable) *sql.Predicate {
 			return sql.In(t.C(entity.FieldSha256), args...)
 		})).
 		Order(file.ByID()).
@@ -124,7 +142,7 @@ func (f *fileClient) CountOwnFileHashCoverage(ctx context.Context, ownerID int, 
 	}
 
 	hashed, err := f.client.File.Query().Where(base...).
-		Where(primaryEntityWhere(func(t *sql.SelectTable) *sql.Predicate {
+		Where(primaryEntityExists(func(t *sql.SelectTable) *sql.Predicate {
 			return sql.NotNull(t.C(entity.FieldSha256))
 		})).
 		Count(ctx)
@@ -137,7 +155,7 @@ func (f *fileClient) CountOwnFileHashCoverage(ctx context.Context, ownerID int, 
 		policyTypes[i] = s
 	}
 	computable, err := f.client.File.Query().Where(base...).
-		Where(primaryEntityWhere(func(t *sql.SelectTable) *sql.Predicate {
+		Where(primaryEntityExists(func(t *sql.SelectTable) *sql.Predicate {
 			p := sql.Table(storagepolicy.Table)
 			return sql.And(
 				sql.IsNull(t.C(entity.FieldSha256)),

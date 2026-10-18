@@ -66,6 +66,63 @@ func releaseUploadSessionLock(sessionID string) {
 	uploadSessionLocks.Delete(sessionID)
 }
 
+// uploadWriteGate 控制一个上传会话的数据写入。会话完成时关闭写入并等待已在写入的分片结束，
+// 之后迟到的分片请求（已通过会话校验但尚未写入）不能再改写已完成实体的物理文件，
+// 否则已记录的哈希会与内容不符。已关闭的闸门保留到会话过期，避免迟到请求重新创建一个打开的闸门。
+// 与 uploadSessionLocks 一样只在本进程内有效。
+type uploadWriteGate struct {
+	mu       sync.RWMutex
+	closed   bool
+	expireAt time.Time
+}
+
+var uploadWriteGates sync.Map // map[string]*uploadWriteGate
+
+const uploadWriteGateDefaultTTL = 24 * time.Hour
+
+func getUploadWriteGate(session *fs.UploadSession) *uploadWriteGate {
+	expireAt := session.Props.ExpireAt
+	if expireAt.IsZero() {
+		expireAt = time.Now().Add(uploadWriteGateDefaultTTL)
+	}
+
+	v, loaded := uploadWriteGates.LoadOrStore(session.Props.UploadSessionID, &uploadWriteGate{expireAt: expireAt})
+	if !loaded {
+		now := time.Now()
+		uploadWriteGates.Range(func(key, value any) bool {
+			if now.After(value.(*uploadWriteGate).expireAt) {
+				uploadWriteGates.Delete(key)
+			}
+			return true
+		})
+	}
+	return v.(*uploadWriteGate)
+}
+
+// admitUploadWrite 允许一次写入，返回的 release 必须在写入结束后调用；会话已完成时拒绝。
+func admitUploadWrite(session *fs.UploadSession) (func(), error) {
+	g := getUploadWriteGate(session)
+	g.mu.RLock()
+	if g.closed {
+		g.mu.RUnlock()
+		return nil, serializer.NewError(serializer.CodeUploadSessionExpired, "Upload session is already completed", nil)
+	}
+	return g.mu.RUnlock, nil
+}
+
+// closeUploadWrites 关闭会话的写入并等待进行中的写入结束；返回的 reopen 用于完成失败时恢复写入。
+func closeUploadWrites(session *fs.UploadSession) func() {
+	g := getUploadWriteGate(session)
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+	return func() {
+		g.mu.Lock()
+		g.closed = false
+		g.mu.Unlock()
+	}
+}
+
 // expectedChunkCount returns the total number of chunks the client is expected
 // to upload for the given session. An empty file still produces a single
 // zero-byte chunk on the client side (see assets/.../utils/helper.ts::getChunks
@@ -226,6 +283,14 @@ func (m *manager) Upload(ctx context.Context, req *fs.UploadRequest, policy *ent
 	d, err := m.GetStorageDriver(ctx, m.CastStoragePolicyOnSlave(ctx, policy))
 	if err != nil {
 		return err
+	}
+
+	if session != nil && session.Props != nil {
+		release, err := admitUploadWrite(session)
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
 
 	// 流式哈希须包在加密之前，计入的是明文
@@ -404,7 +469,10 @@ func (m *manager) CompleteUpload(ctx context.Context, session *fs.UploadSession)
 		return nil, err
 	}
 
+	// 先关闭写入：此后记录的哈希（流式或任务计算）不会再被迟到的分片改写
+	reopen := closeUploadWrites(session)
 	if err := d.CompleteUpload(ctx, session); err != nil {
+		reopen()
 		return nil, err
 	}
 
@@ -415,6 +483,7 @@ func (m *manager) CompleteUpload(ctx context.Context, session *fs.UploadSession)
 	if m.fs != nil {
 		file, err = m.fs.CompleteUpload(ctx, session)
 		if err != nil {
+			reopen()
 			return nil, fmt.Errorf("failed to complete upload: %w", err)
 		}
 

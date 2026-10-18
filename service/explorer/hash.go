@@ -2,6 +2,8 @@ package explorer
 
 import (
 	"context"
+	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/cloudreve/Cloudreve/v4/application/constants"
@@ -9,22 +11,26 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
+	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs/dbfs"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/manager"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
+	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	// 按哈希查找时，单次最多返回的文件数
-	hashSearchMaxFiles = 1000
+	// 按哈希查找时，单次最多返回的文件数（每个结果都要逐级查父目录拼出路径）
+	hashSearchMaxFiles = 200
 
 	// 批量查询哈希时，非文件或无法读取的条目状态
 	hashStatusNotFile manager.HashStatus = "not_file"
 	hashStatusError   manager.HashStatus = "error"
 )
+
+var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // fillFileHash 为文件响应附上当前版本的哈希及计算状态。
 func fillFileHash(ctx context.Context, m manager.FileManager, res *FileResponse, f fs.File) {
@@ -60,6 +66,8 @@ type (
 		Sha256   string             `json:"sha256,omitempty"`
 		Status   manager.HashStatus `json:"status"`
 		Reason   string             `json:"reason,omitempty"`
+		// Code 仅 status 为 error 时有值，为错误代码
+		Code int `json:"code,omitempty"`
 	}
 
 	FileHashResponse struct {
@@ -92,7 +100,7 @@ func (s *FileHashService) Get(c *gin.Context) (*FileHashResponse, error) {
 		file, err := m.Get(c, uri, dbfs.WithFileEntities(), dbfs.WithNotRoot(),
 			dbfs.WithRequiredCapabilities(dbfs.NavigatorCapabilityDownloadFile))
 		if err != nil {
-			items[i].Status, items[i].Reason = hashStatusError, err.Error()
+			hashItemError(c, &items[i], err)
 			continue
 		}
 		if file.Type() != types.FileTypeFile {
@@ -118,6 +126,7 @@ func (s *FileHashService) Get(c *gin.Context) (*FileHashResponse, error) {
 	}
 
 	if len(entities) > 0 {
+		// 部分入队失败时，已入队的条目显示为计算中，其余保持未计算，不让整个请求失败
 		queued, err := m.QueueEntityHash(c, entities)
 		for _, id := range queued {
 			for _, i := range toCompute[id] {
@@ -125,16 +134,30 @@ func (s *FileHashService) Get(c *gin.Context) (*FileHashResponse, error) {
 			}
 		}
 		if err != nil {
-			return nil, serializer.NewError(serializer.CodeCreateTaskError, "Failed to queue hash task", err)
+			logging.FromContext(c).Warning("Failed to queue entity hash task: %s", err)
 		}
 	}
 
 	return &FileHashResponse{Items: items}, nil
 }
 
-// canComputeHash 只允许登录用户为“我的文件”触发计算；管理员代他人触发需要写权限（令牌须带 Admin.Write）。
+// hashItemError 只返回错误代码与对外文案，原始错误（可能含内部路径或数据库信息）只记日志。
+func hashItemError(c context.Context, item *FileHashItem, err error) {
+	item.Status = hashStatusError
+	var appErr serializer.AppError
+	if errors.As(err, &appErr) {
+		item.Code, item.Reason = appErr.Code, appErr.Msg
+	} else {
+		item.Code, item.Reason = serializer.CodeInternalSetting, "Internal error"
+	}
+	logging.FromContext(c).Debug("Failed to get hash of %q: %s", item.Uri, err)
+}
+
+// canComputeHash 只允许登录用户为“我的文件”触发计算，令牌须带 Files.Write（计算会创建后台任务并写入实体）；
+// 管理员代他人触发还需要写权限（令牌须带 Admin.Write）。
 func canComputeHash(ctx context.Context, u *ent.User, uri *fs.URI, file fs.File) bool {
-	if inventory.IsAnonymousUser(u) || uri.FileSystem() != constants.FileSystemMy {
+	if inventory.IsAnonymousUser(u) || uri.FileSystem() != constants.FileSystemMy ||
+		auth.CheckScope(ctx, types.ScopeFilesWrite) != nil {
 		return false
 	}
 	return file.OwnerID() == u.ID || dbfs.CanAccessOthersFiles(ctx, u, true)
@@ -144,7 +167,7 @@ type (
 	FileHashSearchParameterCtx struct{}
 	// FileHashSearchService 在当前用户“我的文件”（不含回收站）中按当前版本的 SHA-256 查找文件。
 	FileHashSearchService struct {
-		Sha256 []string `json:"sha256" binding:"required,min=1,max=100,dive,len=64,hexadecimal"`
+		Sha256 []string `json:"sha256" binding:"required,min=1,max=100"`
 	}
 
 	FileHashMatch struct {
@@ -170,6 +193,9 @@ func (s *FileHashSearchService) Search(c *gin.Context) (*FileHashSearchResponse,
 	sums := make([]string, len(s.Sha256))
 	for i, sum := range s.Sha256 {
 		sums[i] = strings.ToLower(sum)
+		if !sha256HexPattern.MatchString(sums[i]) {
+			return nil, serializer.NewError(serializer.CodeParamErr, "sha256 must be 64 hexadecimal characters", nil)
+		}
 	}
 
 	// 先统计覆盖情况再查找：期间新算出哈希的文件只会被多找到，coverage 不会高估已覆盖的范围
@@ -197,7 +223,8 @@ func (s *FileHashSearchService) Search(c *gin.Context) (*FileHashSearchResponse,
 			continue
 		}
 		file, err := m.TraverseFile(c, f.ID)
-		if err != nil {
+		// 已删除目录中的文件仍保留父目录，路径会落在回收站下，不算“我的文件”
+		if err != nil || file.Uri(false).FileSystem() != constants.FileSystemMy {
 			continue
 		}
 		res.Matches[sum] = append(res.Matches[sum], FileHashMatch{
