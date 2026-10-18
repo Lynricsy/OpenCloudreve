@@ -394,7 +394,7 @@ func (m *GDriveBackupTask) run(ctx context.Context, dep dependency.Dep) (task.St
 		if err := m.ensureRuntime(ctx, dep, false); err != nil {
 			return task.StatusError, err
 		}
-		return m.uploadManifest(ctx)
+		return m.uploadManifest(ctx, dep)
 	case GDriveBackupPhaseGC:
 		if err := m.ensureRuntime(ctx, dep, false); err != nil {
 			return task.StatusError, err
@@ -571,6 +571,8 @@ var errForeignSiteSnapshot = errors.New("snapshot was created by another site")
 // loadPrevious 读取最近一份由本站用当前密钥生成的快照，用于复用 sha256 与失败时沿用旧条目。
 // 其他站点的快照（重装后接管的旧根目录、共用账号的其他站点）与没有站点标识的旧快照一律忽略：
 // 它们的文件 ID 与实体 ID 和本站数据库无关。
+// 本站快照读取失败时直接返回错误，不能跳到更早的快照或当作“没有上一份快照”：否则本轮失败的文件
+// 无法沿用旧条目，新快照会漏掉它们，GC 随后可能删除过期快照及其中唯一的 blob。
 // 索引在局部构建，全部成功后才赋给 rt.prev/rt.hashes；出错时两者保持 nil，重试时重新加载。
 func (m *GDriveBackupTask) loadPrevious(ctx context.Context, siteID string) error {
 	rt := m.rt
@@ -601,9 +603,9 @@ func (m *GDriveBackupTask) loadPrevious(ctx context.Context, siteID string) erro
 			continue
 		}
 		if err != nil {
-			m.l.Warning("Failed to read previous snapshot %q, try an older one: %s", s.Name, err)
+			m.l.Warning("Failed to read previous snapshot %q: %s", s.Name, err)
 			m.event(gdriveEventWarning, "prev_snapshot_unreadable", map[string]any{"snapshot": s.Name, "error": err.Error()})
-			continue
+			return fmt.Errorf("failed to read previous snapshot %q: %w", s.Name, err)
 		}
 		rt.prev, rt.hashes = prev, hashes
 		m.l.Info("Loaded previous snapshot %q with %d files", s.Name, len(prev))
@@ -1669,7 +1671,7 @@ func (m *GDriveBackupTask) awaitRemote(ctx context.Context, dep dependency.Dep) 
 	return task.StatusSuspending, nil
 }
 
-func (m *GDriveBackupTask) uploadManifest(ctx context.Context) (task.Status, error) {
+func (m *GDriveBackupTask) uploadManifest(ctx context.Context, dep dependency.Dep) (task.Status, error) {
 	if err := m.closeWriters(); err != nil {
 		return task.StatusError, err
 	}
@@ -1677,7 +1679,8 @@ func (m *GDriveBackupTask) uploadManifest(ctx context.Context) (task.Status, err
 	if err := finalizeManifest(p, m.state.ManifestSize); err != nil {
 		return task.StatusError, fmt.Errorf("failed to finalize manifest: %w", err)
 	}
-	f, err := m.rt.env.Store.UploadManifest(ctx, m.rt.env.Keyring, p, m.state.StartedAt, m.state.Stats.Files, m.state.Stats.Size)
+	f, err := m.rt.env.Store.UploadManifest(ctx, m.rt.env.Keyring, p, m.state.StartedAt, m.state.Stats.Files, m.state.Stats.Size,
+		dep.SettingProvider().SiteBasic(ctx).ID)
 	if err != nil {
 		return task.StatusError, fmt.Errorf("failed to upload manifest: %w", err)
 	}
@@ -1722,11 +1725,14 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 		return task.StatusError, err
 	}
 	cutoff := time.Now().AddDate(0, 0, -m.rt.env.Config.RetentionDays)
+	siteID := dep.SettingProvider().SiteBasic(ctx).ID
 	var kept []backup.Snapshot
 	var deleted []string
 	for i, s := range snaps {
-		// 最新的快照（本次生成）始终保留
-		if i == 0 || !s.CreatedAt.Before(cutoff) {
+		// 最新的快照（本次生成）始终保留。只清理本站生成的过期快照：
+		// 4.19.8 之前没有站点标识的快照不能用于沿用旧条目，过期删除会让本轮失败文件的唯一备份随之丢失；
+		// 其他站点的快照由其他站点自己清理。这些快照一直保留，并继续参与 blob 引用计算。
+		if i == 0 || !s.CreatedAt.Before(cutoff) || siteID == "" || s.SiteID != siteID {
 			kept = append(kept, s)
 			continue
 		}

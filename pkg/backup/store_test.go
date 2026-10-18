@@ -186,7 +186,7 @@ func TestManifestRoundTripAndWrongKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.UploadManifest(ctx, kr, p, created, 2, 3); err != nil {
+	if _, err := s.UploadManifest(ctx, kr, p, created, 2, 3, "site-a"); err != nil {
 		t.Fatalf("UploadManifest() error = %v", err)
 	}
 	snaps, err := s.ListSnapshots(ctx)
@@ -194,7 +194,7 @@ func TestManifestRoundTripAndWrongKey(t *testing.T) {
 		t.Fatalf("ListSnapshots() = %v, %v", snaps, err)
 	}
 	snap := snaps[0]
-	if snap.KeyID != kr.ID() || snap.Files != 2 || snap.Size != 3 || !snap.CreatedAt.Equal(created) {
+	if snap.KeyID != kr.ID() || snap.SiteID != "site-a" || snap.Files != 2 || snap.Size != 3 || !snap.CreatedAt.Equal(created) {
 		t.Fatalf("snapshot metadata = %+v", snap)
 	}
 

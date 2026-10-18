@@ -144,6 +144,8 @@ type wfFakeDrive struct {
 	files  map[string]*wfFakeFile
 	// failManifestLists 接下来若干次列出快照的请求返回 400
 	failManifestLists int
+	// failDownloads 接下来若干次下载文件内容的请求返回 400
+	failDownloads int
 	// onDelete 删除前调用（不持锁），返回非 0 时以该状态码响应
 	onDelete func(id string) int
 }
@@ -222,7 +224,7 @@ func (fd *wfFakeDrive) addSnapshot(t *testing.T, kr *backup.Keyring, createdAt t
 		Name: createdAt.UTC().Format("20060102T150405Z") + ".jsonl.gz",
 		AppProperties: map[string]string{
 			"ocr_kind": "manifest", "ocr_root": "root", "ocr_k": kr.ID(),
-			"ocr_time": strconv.FormatInt(createdAt.Unix(), 10),
+			"ocr_time": strconv.FormatInt(createdAt.Unix(), 10), "ocr_site": siteID,
 		},
 	}, out.Bytes())
 }
@@ -331,6 +333,11 @@ func (fd *wfFakeDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			delete(fd.files, id)
 			w.WriteHeader(204)
 		case r.URL.Query().Get("alt") == "media":
+			if fd.failDownloads > 0 {
+				fd.failDownloads--
+				wfJSON(w, 400, map[string]any{"error": map[string]any{"message": "injected download failure"}})
+				return
+			}
 			_, _ = w.Write(f.data)
 		default:
 			wfJSON(w, 200, f.meta)
@@ -540,6 +547,34 @@ func TestEnsureRuntimeReloadsPreviousAfterListFailure(t *testing.T) {
 	require.Equal(t, "old-blob", entries[0].Blob)
 }
 
+// 快照列出成功、但本站快照下载失败时，不能跳过它（更不能当作没有上一份快照）：
+// 必须返回错误保持索引未加载，重试成功后照常沿用旧条目，GC 才不会删掉唯一的旧 blob。
+func TestEnsureRuntimeReloadsPreviousAfterManifestReadFailure(t *testing.T) {
+	fd, store := newWfStore(t)
+	fd.addBlob("old-blob")
+	fd.addSnapshot(t, nil, time.Now().Add(-time.Hour), wfSiteID, backup.ManifestEntry{FileID: 1, OwnerID: 1, Path: "/a.txt", Size: 3, Blob: "older-blob", Sha256: "older"})
+	fd.addSnapshot(t, nil, time.Now(), wfSiteID, backup.ManifestEntry{FileID: 1, OwnerID: 1, Path: "/a.txt", Size: 3, Blob: "old-blob", Sha256: "old"})
+	fd.failDownloads = 1
+	m := newWfTask(t, nil, store)
+	dep := newWfTestDep(nil)
+
+	require.Error(t, m.ensureRuntime(context.Background(), dep, true))
+	require.Nil(t, m.rt.prev)
+	require.Nil(t, m.rt.hashes)
+
+	require.NoError(t, m.ensureRuntime(context.Background(), dep, true))
+	require.Len(t, m.rt.prev, 1)
+
+	f, e := wfFileOnRemote(5, wfEntityCreated)
+	e.UploadSessionID = &uuid.Nil
+	require.NoError(t, m.processFile(context.Background(), nil, f, e, false))
+	require.NoError(t, m.closeWriters())
+	entries := readLines[backup.ManifestEntry](t, filepath.Join(m.state.TempDir, gdriveManifestFile))
+	require.Len(t, entries, 1)
+	// 沿用的是最新一份快照的条目，而不是读取失败后退回的更早快照
+	require.Equal(t, "old-blob", entries[0].Blob)
+}
+
 // cron 与手动触发同时发起时，只有一个备份任务入队。
 func TestEnqueueGDriveBackupAdmitsOnlyOne(t *testing.T) {
 	dep := newWfTestDep(nil)
@@ -668,6 +703,30 @@ func TestGCReadsPlainSnapshotWithItsOwnFormat(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, m.state.Stats.DeletedBlobs)
 	require.ElementsMatch(t, []string{blobA, blobB}, fd.blobNames())
+}
+
+// GC 只删除本站生成的过期快照。没有站点标识的旧快照（4.19.8 之前）和其他站点的快照即使过期也保留，
+// 它们引用的 blob 也不删除：升级后第一次运行无法从旧快照沿用失败文件，旧快照是这些文件仅存的备份。
+func TestGCKeepsLegacyAndForeignSnapshots(t *testing.T) {
+	fd, store := newWfStore(t)
+	old := time.Now().AddDate(0, 0, -30)
+	fd.addSnapshot(t, nil, time.Now(), wfSiteID)
+	fd.addSnapshot(t, nil, old, wfSiteID, backup.ManifestEntry{FileID: 1, Path: "/own", Blob: "own-blob"})
+	legacy := fd.addSnapshot(t, nil, old.Add(-time.Hour), "", backup.ManifestEntry{FileID: 2, Path: "/legacy", Blob: "legacy-blob"})
+	foreign := fd.addSnapshot(t, nil, old.Add(-2*time.Hour), "other-site", backup.ManifestEntry{FileID: 3, Path: "/foreign", Blob: "foreign-blob"})
+	fd.addBlob("own-blob")
+	fd.addBlob("legacy-blob")
+	fd.addBlob("foreign-blob")
+
+	m := newWfTask(t, nil, store)
+	_, err := m.gc(context.Background(), newWfTestDep(nil))
+	require.NoError(t, err)
+	require.EqualValues(t, 1, m.state.Stats.DeletedSnapshots)
+	require.ElementsMatch(t, []string{"legacy-blob", "foreign-blob"}, fd.blobNames())
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	require.Contains(t, fd.files, legacy)
+	require.Contains(t, fd.files, foreign)
 }
 
 // wfDB 建立一个所有者（ID 1）、“我的文件”根目录与存储策略的 sqlite 数据库。

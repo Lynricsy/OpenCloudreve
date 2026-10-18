@@ -33,6 +33,7 @@ const (
 	propFiles       = "ocr_files"
 	propSize        = "ocr_size"
 	propTime        = "ocr_time"
+	propSite        = "ocr_site"
 	kindRoot        = "root"
 	kindBlobs       = "blobs"
 	kindManifest    = "manifest"
@@ -100,6 +101,8 @@ type (
 		Files     int64
 		Size      int64
 		KeyID     string
+		// SiteID 生成快照的站点 ID；4.19.8 之前的快照没有这个属性，为空。
+		SiteID string
 	}
 )
 
@@ -312,7 +315,7 @@ type readCloser struct {
 func (s *Store) ListSnapshots(ctx context.Context) ([]Snapshot, error) {
 	var res []Snapshot
 	err := s.dc.List(ctx, s.rootQuery(kindManifest), func(f *DriveFile) error {
-		snap := Snapshot{ID: f.ID, Name: f.Name, CreatedAt: f.CreatedTime, KeyID: f.AppProperties[propKey]}
+		snap := Snapshot{ID: f.ID, Name: f.Name, CreatedAt: f.CreatedTime, KeyID: f.AppProperties[propKey], SiteID: f.AppProperties[propSite]}
 		snap.Files, _ = strconv.ParseInt(f.AppProperties[propFiles], 10, 64)
 		snap.Size, _ = strconv.ParseInt(f.AppProperties[propSize], 10, 64)
 		if t, err := strconv.ParseInt(f.AppProperties[propTime], 10, 64); err == nil {
@@ -330,20 +333,24 @@ func (s *Store) ListSnapshots(ctx context.Context) ([]Snapshot, error) {
 	return res, nil
 }
 
-// UploadManifest 压缩、（可选）加密并上传本地 JSONL 清单。
-func (s *Store) UploadManifest(ctx context.Context, kr *Keyring, localPath string, createdAt time.Time, files, size int64) (*DriveFile, error) {
+// UploadManifest 压缩、（可选）加密并上传本地 JSONL 清单。siteID 记录在快照属性中，GC 据此只清理本站的快照。
+func (s *Store) UploadManifest(ctx context.Context, kr *Keyring, localPath string, createdAt time.Time, files, size int64, siteID string) (*DriveFile, error) {
 	name := createdAt.UTC().Format("20060102T150405Z") + ".jsonl.gz"
 	if kr != nil {
 		name += ".age"
 	}
-	return s.uploadStream(ctx, name, s.manifests, map[string]string{
+	props := map[string]string{
 		propKind:  kindManifest,
 		propRoot:  s.root,
 		propKey:   kr.ID(),
 		propFiles: strconv.FormatInt(files, 10),
 		propSize:  strconv.FormatInt(size, 10),
 		propTime:  strconv.FormatInt(createdAt.Unix(), 10),
-	}, func(w io.Writer) error {
+	}
+	if siteID != "" {
+		props[propSite] = siteID
+	}
+	return s.uploadStream(ctx, name, s.manifests, props, func(w io.Writer) error {
 		f, err := os.Open(localPath)
 		if err != nil {
 			return err
