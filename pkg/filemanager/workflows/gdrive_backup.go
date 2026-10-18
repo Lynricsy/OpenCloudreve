@@ -969,14 +969,21 @@ func (m *GDriveBackupTask) dailyReserved() int64 {
 }
 
 // dailyRemaining 当天还能上传的字节数（已扣除从机批次的预留）；未设上限时返回 -1。
+// 与 addDailyUploaded 一样按实时日期判断：一轮迭代中途跨过零点时，迭代入口算好的 dailyBase 属于昨天，
+// 不能计入；同一时间只有一个备份任务在执行，零点之后其他任务不可能有上传，今天的基数就是 0，
+// 下一轮迭代的 refreshDailyQuota 会重新统计。
 func (m *GDriveBackupTask) dailyRemaining() int64 {
 	if m.rt.dailyLimit <= 0 {
 		return -1
 	}
+	day := dailyKey(time.Now())
 	m.Lock()
 	defer m.Unlock()
-	used := m.rt.dailyBase + m.dailyReserved()
-	if m.state.DailyDay == m.rt.dailyBaseDay {
+	used := m.dailyReserved()
+	if m.rt.dailyBaseDay == day {
+		used += m.rt.dailyBase
+	}
+	if m.state.DailyDay == day {
 		used += m.state.DailyUploaded
 	}
 	return max(m.rt.dailyLimit-used, 0)

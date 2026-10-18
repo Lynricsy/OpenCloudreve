@@ -126,3 +126,17 @@ func TestDailyRemainingUnlimited(t *testing.T) {
 		t.Fatalf("admitUpload = %v, want nil", err)
 	}
 }
+
+func TestDailyRemainingAfterMidnightWithinIteration(t *testing.T) {
+	// 迭代开始时还是昨天（dailyBaseDay、dailyBase 都是昨天的），跑到零点之后已经按今天记了 100 字节：
+	// 剩余额度必须按今天计算，不能因为日期对不上就把今天的上传量忽略掉
+	m := newLimitTask(100, 100)
+	m.rt.dailyBaseDay = dailyKey(time.Now().AddDate(0, 0, -1))
+	m.rt.dailyBase = 30
+	if got := m.dailyRemaining(); got != 0 {
+		t.Fatalf("remaining = %d, want 0", got)
+	}
+	if err := m.admitUpload(1); err != errUploadDeferred {
+		t.Fatalf("admitUpload = %v, want errUploadDeferred", err)
+	}
+}
