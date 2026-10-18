@@ -133,6 +133,8 @@ type GDriveBackup struct {
 	// Key age 私钥字符串
 	Key   string
 	Proxy string
+	// DailyLimit 每天（服务器时区的自然日）最多上传到 Drive 的字节数，0 表示不限
+	DailyLimit int64
 }
 
 type Logo struct {

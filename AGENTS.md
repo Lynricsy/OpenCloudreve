@@ -17,7 +17,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 ## 2. 构建、运行与验证
 
 - **后端编译**依赖 `application/statics/assets.zip`（`go:embed`，已 gitignore）。只需要编译时，放一个占位 zip 即可，内含 `assets/build/index.html`。本机没有 `zip` 命令，用 Python 的 `zipfile` 生成。
-- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.7`）；CI 发布 tag 时会强制要求 tag 与常量一致。新增 `DefaultSettings` 键时必须同时提升版本号：`migrateDefaultSettings` 只在库里没有当前版本标记时运行，而 `SettingClient.Set` 只更新已存在的行，缺行时设置接口会静默不生效。
+- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.8`）；CI 发布 tag 时会强制要求 tag 与常量一致。新增 `DefaultSettings` 键时必须同时提升版本号：`migrateDefaultSettings` 只在库里没有当前版本标记时运行，而 `SettingClient.Set` 只更新已存在的行，缺行时设置接口会静默不生效。
 - **正式打包**：`.build/build-assets.sh <版本号>`。这个脚本会把前端 `package.json` 的版本改成传入的版本号，需要系统有 `zip` 命令。如果直接 `yarn build`，启动时会报 `Static resource version mismatch`，页面仍能用。版本号必须等于 `constants.BackendVersion`。
 - **前端**：用 `yarn`（`npm i -g yarn@1`）。`assets/` 有 husky pre-commit，会对暂存文件跑 prettier（lint-staged）。
 - **类型检查**：`.github/scripts/tsc-check.sh`（需先在 `assets/` 里 `yarn install`）。上游本身就带一批 TS 错误（分叉时 127 条，现在 115 条），基线存在 `.github/tsc-baseline.txt`，脚本会去掉行列号、按字节序排序后对比，出现基线之外的错误就失败。`vite build` 不做类型检查，所以 `yarn build` 通过不代表类型正确。错误减少，或者因为权限位增减导致 `GroupPermission` 类型字面量的报错文本变化时，确认没有真正新增错误后，运行 `.github/scripts/tsc-check.sh --update` 更新基线。
@@ -82,6 +82,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
   - 清理顺序：先上传新快照，再删除早于保留期的快照（最新一份始终保留），最后删除不被任何保留快照引用的 blob。如果有恢复任务正在执行，或者任一保留快照无法读取（例如用其他密钥加密），就跳过 blob 清理。
   - 恢复使用目标用户自己的 FileManager 写入（容量和策略按目标用户计算）。同名文件跳过不覆盖。读到流末尾时校验 sha256，不一致则让上传失败。
   - 同一时间只允许一个备份任务（`GDriveTaskPending`）。`crontab.Start` 可以重复调用；修改 `cron_gdrive_backup` 后由设置后处理器重建 cron，立即生效。
+  - 每日上传上限 `gdrive_backup_daily_limit`（字节，0 不限）：按服务器时区的自然日、主机和从机合计计算。每个备份任务把当天的上传量记在私有状态 `daily_day`/`daily_uploaded`（不设上限时也照常记录），后续任务在 `refreshDailyQuota` 中把同一天其他备份任务的用量加进来；升级前的旧任务没有这两个字段，按当天创建任务的 `uploaded_size` 计入。主机读取的实体在哈希和上传之前检查剩余额度，装不下时不读文件、直接延后（`stats.deferred`，沿用旧快照条目，`daily_limit_reached` 事件只记一次）。从机批次由 `limitBatch` 按剩余额度截取队列前缀，并把整批大小预留在 `inflight.reserved`，批次结算后按实际上传量计入。开头的条目装不下时，如果还有其他批次占着预留就先等待，否则延后，因此即使从机是旧版本也不会超额。单个文件大于整个上限时记为失败，而不是每天延后。
   - 运行记录：两种任务的私有状态都带有 `events`（`{t,l,c,p}`，最多 500 条，超出后丢弃最旧的并累计 `events_dropped`），备份任务还记录 `trigger`（`cron`/`manual`，同时写入 summary）。前端“备份 → 运行记录”页签通过现有的 `/admin/queue` 接口读取，按 `backup.events.<code>` 翻译，并用 `started`/`scan_done`/`manifest_started`/`snapshot_uploaded`/`finished` 推算阶段时间线。新增或改名事件 code 时，前端三种语言的文案要同步改。`task_failed` 只在任务最终失败时由 `OnError` 写入，可重试的错误不记录。
   - 前端页面（`Admin/Backup/Backup.tsx`）分为六个横向页签：运行状态、Google 账号（含代理）、备份设置、加密、快照与恢复、运行记录，URL 参数为 `?tab=`，OAuth 回调结束后回到 `?tab=account`。备份状态由页面统一获取，任务运行中每 5 秒轮询一次，结果分发给各页签。账号和加密页签通过 `SettingsWrapper` 的 `onSaved` 在保存后刷新状态。设置类页签各自用一个 `SettingsWrapper` 读取和保存。传给它的 `settings` 数组必须是模块级常量：`SettingsWrapper` 以这个数组的引用作为 effect 依赖，如果写成内联数组，状态轮询一刷新就会重新拉取设置，并丢掉还没保存的修改。
   - 页签内容统一使用 `Admin/Backup/BackupUi.tsx` 中的组件：`BackupCard`（描边卡片）、`BackupCardHeader`（色调图标、标题、副标题、操作区）、`StatTile`（统计块）、`ToneIcon`。颜色只取主题语义色（`primary`/`success`/`warning`/`error`），并用 `alpha` 生成浅色底，这样深色模式下也能正常显示，不要写死色值。页签枚举 `BackupPageTab` 也定义在这个文件里，避免与 `Backup.tsx` 循环引用。

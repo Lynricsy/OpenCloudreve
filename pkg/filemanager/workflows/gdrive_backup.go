@@ -68,6 +68,12 @@ type (
 		Errors       []string                  `json:"errors,omitempty"`
 		// Trigger 触发方式：GDriveBackupTriggerCron 或 GDriveBackupTriggerManual；旧任务为空
 		Trigger string `json:"trigger,omitempty"`
+		// DailyDay / DailyUploaded 本任务在 DailyDay（服务器时区的日期）这一天上传到 Drive 的字节数，
+		// 后续任务据此计算当天已用的上传额度；跨日后重新计数
+		DailyDay      string `json:"daily_day,omitempty"`
+		DailyUploaded int64  `json:"daily_uploaded,omitempty"`
+		// DailyLimitHit 已记录过 daily_limit_reached 事件
+		DailyLimitHit bool `json:"daily_limit_hit,omitempty"`
 		GDriveTaskEventLog
 	}
 
@@ -87,6 +93,8 @@ type (
 		SlaveTaskID int   `json:"slave_task_id"`
 		End         int64 `json:"end"`
 		PollErrors  int   `json:"poll_errors,omitempty"`
+		// Reserved 设置了每日上传上限时，这一批预留的上传额度（批内实体大小之和），完成后按实际上传量结算
+		Reserved int64 `json:"reserved,omitempty"`
 	}
 
 	// GDriveTaskEvent 任务事件日志中的一条，前端按 code 翻译
@@ -113,6 +121,7 @@ type (
 		Reused           int64  `json:"reused"`
 		Pending          int64  `json:"pending"`
 		Failed           int64  `json:"failed"`
+		Deferred         int64  `json:"deferred"` // 当天上传额度不足、延后到下次运行的文件数
 		DeletedSnapshots int64  `json:"deleted_snapshots"`
 		DeletedBlobs     int64  `json:"deleted_blobs"`
 		Snapshot         string `json:"snapshot,omitempty"`
@@ -121,6 +130,8 @@ type (
 	gdrivePendingLine struct {
 		Entry    backup.ManifestEntry `json:"e"`
 		PolicyID int                  `json:"p"`
+		// end 这一行在队列文件中的结束偏移，由 readPendingLines 填充
+		end int64
 	}
 
 	gdriveDir struct {
@@ -141,6 +152,12 @@ type (
 
 		manifest *bufferedFile
 		pending  map[int]*bufferedFile
+
+		// dailyLimit 每轮迭代开始时读取的每日上传上限，0 表示不限；
+		// dailyBase 为其他备份任务在 dailyBaseDay 当天已上传的字节数
+		dailyLimit   int64
+		dailyBaseDay string
+		dailyBase    int64
 	}
 
 	bufferedFile struct {
@@ -208,6 +225,9 @@ func cronGDriveBackup(ctx context.Context) {
 
 // ErrGDriveBackupRunning 已有备份任务在执行。
 var ErrGDriveBackupRunning = errors.New("a google drive backup task is already running")
+
+// errUploadDeferred 当天的上传额度不足，文件延后到下次运行。
+var errUploadDeferred = errors.New("daily upload limit reached")
 
 // GDriveTaskPending 是否存在未结束的指定类型任务。
 func GDriveTaskPending(ctx context.Context, dep dependency.Dep, taskType string) (bool, error) {
@@ -338,9 +358,15 @@ func (m *GDriveBackupTask) run(ctx context.Context, dep dependency.Dep) (task.St
 		if err := m.ensureRuntime(ctx, dep, true); err != nil {
 			return task.StatusError, err
 		}
+		if err := m.refreshDailyQuota(ctx, dep); err != nil {
+			return task.StatusError, err
+		}
 		return m.scan(ctx, dep)
 	case GDriveBackupPhaseRemote:
 		if err := m.ensureRuntime(ctx, dep, true); err != nil {
+			return task.StatusError, err
+		}
+		if err := m.refreshDailyQuota(ctx, dep); err != nil {
 			return task.StatusError, err
 		}
 		return m.awaitRemote(ctx, dep)
@@ -781,6 +807,9 @@ func (m *GDriveBackupTask) processFile(ctx context.Context, fm manager.FileManag
 		if ctx.Err() != nil {
 			return err
 		}
+		if errors.Is(err, errUploadDeferred) {
+			return m.deferUpload(&entry)
+		}
 		return m.fail(&entry, err)
 	}
 	return m.writeEntry(&entry)
@@ -794,6 +823,10 @@ func (m *GDriveBackupTask) backupLocal(ctx context.Context, fm manager.FileManag
 
 	var sum []byte
 	if sha == "" {
+		// 额度不足时连哈希都不算：首次全量备份超出额度的部分不必每天重新读一遍
+		if err := m.admitUpload(e.Size); err != nil {
+			return err
+		}
 		src, err := open()
 		if err != nil {
 			return fmt.Errorf("failed to open entity: %w", err)
@@ -819,6 +852,9 @@ func (m *GDriveBackupTask) backupLocal(ctx context.Context, fm manager.FileManag
 		m.state.Stats.Reused++
 		m.Unlock()
 	} else {
+		if err := m.admitUpload(e.Size); err != nil {
+			return err
+		}
 		src, err := open()
 		if err != nil {
 			return fmt.Errorf("failed to open entity: %w", err)
@@ -832,6 +868,7 @@ func (m *GDriveBackupTask) backupLocal(ctx context.Context, fm manager.FileManag
 		m.Lock()
 		m.state.Stats.Uploaded++
 		m.state.Stats.UploadedSize += e.Size
+		m.addDailyUploaded(e.Size)
 		m.Unlock()
 	}
 
@@ -865,6 +902,109 @@ func (m *GDriveBackupTask) carryOver(fileID int) error {
 		}
 	}
 	return m.writeEntry(&prev)
+}
+
+// refreshDailyQuota 读取最新的每日上传上限；首次运行或跨日时，统计其他备份任务当天已上传的字节数。
+// 同一时间只有一个备份任务在执行，其他任务的用量在本轮运行期间不会变化。
+func (m *GDriveBackupTask) refreshDailyQuota(ctx context.Context, dep dependency.Dep) error {
+	m.rt.dailyLimit = dep.SettingProvider().GDriveBackup(ctx).DailyLimit
+	if m.rt.dailyLimit <= 0 {
+		return nil
+	}
+	now := time.Now()
+	day := dailyKey(now)
+	if m.rt.dailyBaseDay == day {
+		return nil
+	}
+	y, mo, d := now.Date()
+	dayStart := time.Date(y, mo, d, 0, 0, 0, 0, now.Location())
+	tasks, err := dep.DBClient().Task.Query().
+		Where(task.Type(queue.GDriveBackupTaskType), task.IDNEQ(m.ID()), task.UpdatedAtGTE(dayStart)).
+		Select(task.FieldCreatedAt, task.FieldPrivateState).
+		All(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to query today's backup tasks: %w", err)
+	}
+	var base int64
+	for _, t := range tasks {
+		s := &GDriveBackupTaskState{}
+		if err := json.Unmarshal([]byte(t.PrivateState), s); err != nil {
+			continue
+		}
+		switch {
+		case s.DailyDay == day:
+			base += s.DailyUploaded
+		case s.DailyDay == "" && !t.CreatedAt.Before(dayStart):
+			// 升级前的任务没有按日计数，今天创建的按总上传量计入
+			base += s.Stats.UploadedSize
+		}
+	}
+	m.rt.dailyBaseDay, m.rt.dailyBase = day, base
+	return nil
+}
+
+// dailyKey 按服务器时区取日期，与定时备份的 cron 使用同一时区。
+func dailyKey(t time.Time) string {
+	return t.Format("2006-01-02")
+}
+
+// addDailyUploaded 记录本任务上传到 Drive 的字节数，跨日后重新计数。调用方必须持有任务锁。
+// 未设置上限时也照常计数，这样当天中途设置的上限会把之前的上传量算进去。
+func (m *GDriveBackupTask) addDailyUploaded(size int64) {
+	if day := dailyKey(time.Now()); m.state.DailyDay != day {
+		m.state.DailyDay, m.state.DailyUploaded = day, 0
+	}
+	m.state.DailyUploaded += size
+}
+
+// dailyReserved 已派发的从机批次预留的上传额度。调用方必须持有任务锁。
+func (m *GDriveBackupTask) dailyReserved() int64 {
+	var reserved int64
+	for _, n := range m.state.Remote {
+		if n.Inflight != nil {
+			reserved += n.Inflight.Reserved
+		}
+	}
+	return reserved
+}
+
+// dailyRemaining 当天还能上传的字节数（已扣除从机批次的预留）；未设上限时返回 -1。
+func (m *GDriveBackupTask) dailyRemaining() int64 {
+	if m.rt.dailyLimit <= 0 {
+		return -1
+	}
+	m.Lock()
+	defer m.Unlock()
+	used := m.rt.dailyBase + m.dailyReserved()
+	if m.state.DailyDay == m.rt.dailyBaseDay {
+		used += m.state.DailyUploaded
+	}
+	return max(m.rt.dailyLimit-used, 0)
+}
+
+// admitUpload 判断大小为 size 的内容今天能否上传：额度不足返回 errUploadDeferred；
+// 单个文件超过整个每日上限时永远传不上去，返回普通错误按失败处理，让管理员在失败列表里看到。
+func (m *GDriveBackupTask) admitUpload(size int64) error {
+	remaining := m.dailyRemaining()
+	if remaining < 0 || size <= remaining {
+		return nil
+	}
+	if size > m.rt.dailyLimit {
+		return fmt.Errorf("file size (%d bytes) exceeds the daily upload limit (%d bytes)", size, m.rt.dailyLimit)
+	}
+	return errUploadDeferred
+}
+
+// deferUpload 当天额度不足：本次不上传，沿用上一份快照中的条目，下次运行再处理。
+func (m *GDriveBackupTask) deferUpload(entry *backup.ManifestEntry) error {
+	m.Lock()
+	m.state.Stats.Deferred++
+	if !m.state.DailyLimitHit {
+		m.state.DailyLimitHit = true
+		m.state.add(gdriveEventWarning, "daily_limit_reached", map[string]any{"limit": m.rt.dailyLimit})
+	}
+	m.Unlock()
+	return m.carryOver(entry.FileID)
 }
 
 func openBuffered(p string, size int64) (*bufferedFile, error) {
@@ -991,8 +1131,9 @@ func readPendingLines(p string, offset, limit int64, maxEnd int64) ([]gdrivePend
 			if uerr := json.Unmarshal(raw, &line); uerr != nil {
 				return nil, 0, fmt.Errorf("corrupted remote queue file: %w", uerr)
 			}
-			lines = append(lines, line)
 			end += int64(len(raw))
+			line.end = end
+			lines = append(lines, line)
 		}
 		if err == io.EOF {
 			break
@@ -1067,12 +1208,26 @@ func pickNode(ctx context.Context, np cluster.NodePool, nodeID int) (cluster.Nod
 }
 
 func (m *GDriveBackupTask) dispatchBatch(ctx context.Context, dep dependency.Dep, np cluster.NodePool, nodeID int, n *GDriveRemoteNode) error {
-	lines, end, err := readPendingLines(m.pendingPath(nodeID), n.Done, gdriveRemoteBatch, n.Written)
-	if err != nil {
-		return fmt.Errorf("failed to read remote queue: %w", err)
+	var (
+		lines         []gdrivePendingLine
+		end, reserved int64
+	)
+	// 额度不足时开头的条目会被直接延后，继续读后面的队列，直到凑出可派发的一批或队列读完
+	for len(lines) == 0 && n.Done < n.Written {
+		read, readEnd, err := readPendingLines(m.pendingPath(nodeID), n.Done, gdriveRemoteBatch, n.Written)
+		if err != nil {
+			return fmt.Errorf("failed to read remote queue: %w", err)
+		}
+		if len(read) == 0 {
+			return fmt.Errorf("remote queue of node %d is corrupted at offset %d (%w)", nodeID, n.Done, queue.CriticalErr)
+		}
+		var wait bool
+		if lines, end, reserved, wait, err = m.limitBatch(n, read, readEnd); err != nil || wait {
+			return err
+		}
 	}
 	if len(lines) == 0 {
-		return fmt.Errorf("remote queue of node %d is corrupted at offset %d (%w)", nodeID, n.Done, queue.CriticalErr)
+		return nil
 	}
 
 	node, err := pickNode(ctx, np, nodeID)
@@ -1135,7 +1290,7 @@ func (m *GDriveBackupTask) dispatchBatch(ctx context.Context, dep dependency.Dep
 
 	m.l.Info("Dispatched %d entities to slave node %d as task %d", len(state.Items), nodeID, taskID)
 	m.Lock()
-	n.Inflight = &GDriveRemoteBatch{SlaveTaskID: taskID, End: end}
+	n.Inflight = &GDriveRemoteBatch{SlaveTaskID: taskID, End: end, Reserved: reserved}
 	m.state.add(gdriveEventInfo, "remote_dispatched", map[string]any{
 		"node_id":       nodeID,
 		"node_name":     node.Name(),
@@ -1144,6 +1299,50 @@ func (m *GDriveBackupTask) dispatchBatch(ctx context.Context, dep dependency.Dep
 	})
 	m.Unlock()
 	return nil
+}
+
+// limitBatch 按当天剩余的上传额度截取这一批的前缀，返回截取后的条目、结束偏移与预留的额度。
+// 开头的条目装不下时：超过整个每日上限的记为失败；其他从机批次仍占着额度时先不派发（wait），
+// 等它们按实际上传量结算后再算；否则延后到下次运行。被跳过的条目直接推进 n.Done。
+// 从机按实际需要上传的内容消耗额度，预留按整批大小计算，宁可少派也不超额。
+func (m *GDriveBackupTask) limitBatch(n *GDriveRemoteNode, lines []gdrivePendingLine, end int64) ([]gdrivePendingLine, int64, int64, bool, error) {
+	if m.rt.dailyLimit <= 0 {
+		return lines, end, 0, false, nil
+	}
+	for len(lines) > 0 {
+		remaining := m.dailyRemaining()
+		var reserve int64
+		k := 0
+		for k < len(lines) && reserve+lines[k].Entry.Size <= remaining {
+			reserve += lines[k].Entry.Size
+			k++
+		}
+		if k > 0 {
+			return lines[:k], lines[k-1].end, reserve, false, nil
+		}
+
+		first := &lines[0]
+		if err := m.admitUpload(first.Entry.Size); errors.Is(err, errUploadDeferred) {
+			m.Lock()
+			busy := m.dailyReserved() > 0
+			m.Unlock()
+			if busy {
+				return nil, 0, 0, true, nil
+			}
+			if err := m.deferUpload(&first.Entry); err != nil {
+				return nil, 0, 0, false, err
+			}
+		} else if err != nil {
+			if err := m.fail(&first.Entry, err); err != nil {
+				return nil, 0, 0, false, err
+			}
+		}
+		m.Lock()
+		n.Done, n.Attempts = first.end, 0
+		m.Unlock()
+		lines = lines[1:]
+	}
+	return nil, 0, 0, false, nil
 }
 
 func (m *GDriveBackupTask) pollBatch(ctx context.Context, dep dependency.Dep, np cluster.NodePool, nodeID int, n *GDriveRemoteNode) error {
@@ -1288,6 +1487,7 @@ func (m *GDriveBackupTask) applyResults(nodeID int, n *GDriveRemoteNode, results
 		if r.Uploaded && !counted[r.EntityID] {
 			m.state.Stats.Uploaded++
 			m.state.Stats.UploadedSize += entry.Size
+			m.addDailyUploaded(entry.Size)
 		} else {
 			m.state.Stats.Reused++
 		}
@@ -1438,8 +1638,8 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 
 func (m *GDriveBackupTask) finish() (task.Status, error) {
 	s := m.state.Stats
-	m.l.Info("Google Drive backup finished: %d files, %d uploaded, %d reused, %d pending, %d failed, %d snapshots and %d blobs deleted",
-		s.Files, s.Uploaded, s.Reused, s.Pending, s.Failed, s.DeletedSnapshots, s.DeletedBlobs)
+	m.l.Info("Google Drive backup finished: %d files, %d uploaded, %d reused, %d pending, %d deferred, %d failed, %d snapshots and %d blobs deleted",
+		s.Files, s.Uploaded, s.Reused, s.Pending, s.Deferred, s.Failed, s.DeletedSnapshots, s.DeletedBlobs)
 	level := gdriveEventInfo
 	if s.Failed > 0 {
 		level = gdriveEventWarning
@@ -1450,6 +1650,7 @@ func (m *GDriveBackupTask) finish() (task.Status, error) {
 		"uploaded_size": s.UploadedSize,
 		"reused":        s.Reused,
 		"pending":       s.Pending,
+		"deferred":      s.Deferred,
 		"failed":        s.Failed,
 	})
 	if s.Failed > 0 && s.Uploaded == 0 && s.Reused == 0 {
@@ -1501,6 +1702,7 @@ func (m *GDriveBackupTask) Summarize(hasher hashid.Encoder) *queue.Summary {
 		"reused":            s.Reused,
 		"pending":           s.Pending,
 		"failed":            s.Failed,
+		"deferred":          s.Deferred,
 		"deleted_snapshots": s.DeletedSnapshots,
 		"deleted_blobs":     s.DeletedBlobs,
 	}

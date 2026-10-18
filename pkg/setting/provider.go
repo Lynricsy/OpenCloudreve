@@ -749,6 +749,10 @@ func (s *settingProvider) GDriveBackup(ctx context.Context) *GDriveBackup {
 	if retention < 1 {
 		retention = 1
 	}
+	dailyLimit, err := strconv.ParseInt(s.getString(ctx, "gdrive_backup_daily_limit", "0"), 10, 64)
+	if err != nil || dailyLimit < 0 {
+		dailyLimit = 0
+	}
 	return &GDriveBackup{
 		Enabled:       s.getBoolean(ctx, "gdrive_backup_enabled", false),
 		ClientID:      s.getString(ctx, "gdrive_backup_client_id", ""),
@@ -760,6 +764,7 @@ func (s *settingProvider) GDriveBackup(ctx context.Context) *GDriveBackup {
 		Encrypt:       s.getBoolean(ctx, "gdrive_backup_encrypt", false),
 		Key:           s.getString(ctx, "gdrive_backup_key", ""),
 		Proxy:         s.getString(ctx, "gdrive_backup_proxy", ""),
+		DailyLimit:    dailyLimit,
 	}
 }
 

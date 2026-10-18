@@ -569,6 +569,7 @@ var DefaultSettings = map[string]string{
 	"gdrive_backup_encrypt":                      "0",
 	"gdrive_backup_key":                          "",
 	"gdrive_backup_proxy":                        "",
+	"gdrive_backup_daily_limit":                  "0",
 	"authn_enabled":                              "1",
 	"captcha_type":                               "normal",
 	"captcha_height":                             "60",

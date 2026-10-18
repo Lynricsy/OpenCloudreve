@@ -221,6 +221,7 @@ var (
 		"gdrive_backup_key":            gdriveBackupPreProcessor,
 		"gdrive_backup_policies":       gdriveBackupPreProcessor,
 		"gdrive_backup_retention_days": gdriveBackupPreProcessor,
+		"gdrive_backup_daily_limit":    gdriveBackupPreProcessor,
 		"gdrive_backup_proxy":          gdriveBackupPreProcessor,
 		"cron_gdrive_backup":           gdriveBackupPreProcessor,
 	}

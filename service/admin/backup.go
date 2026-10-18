@@ -496,6 +496,11 @@ func gdriveBackupPreProcessor(ctx context.Context, settings map[string]string) e
 			return fmt.Errorf("retention days must be a positive integer")
 		}
 	}
+	if v, ok := settings["gdrive_backup_daily_limit"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err != nil || n < 0 {
+			return fmt.Errorf("daily upload limit must be a non-negative integer")
+		}
+	}
 	if v, ok := settings["cron_gdrive_backup"]; ok {
 		if _, err := cron.ParseStandard(v); err != nil {
 			return fmt.Errorf("invalid cron expression %q: %w", v, err)
