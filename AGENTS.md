@@ -17,7 +17,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 ## 2. 构建、运行与验证
 
 - **后端编译**依赖 `application/statics/assets.zip`（`go:embed`，已 gitignore）。只需要编译时，放一个占位 zip 即可，内含 `assets/build/index.html`。本机没有 `zip` 命令，用 Python 的 `zipfile` 生成。
-- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.8`）；CI 发布 tag 时会强制要求 tag 与常量一致。新增 `DefaultSettings` 键时必须同时提升版本号：`migrateDefaultSettings` 只在库里没有当前版本标记时运行，而 `SettingClient.Set` 只更新已存在的行，缺行时设置接口会静默不生效。
+- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.9`）；CI 发布 tag 时会强制要求 tag 与常量一致。新增 `DefaultSettings` 键时必须同时提升版本号：`migrateDefaultSettings` 只在库里没有当前版本标记时运行，而 `SettingClient.Set` 只更新已存在的行，缺行时设置接口会静默不生效。
 - **正式打包**：`.build/build-assets.sh <版本号>`。这个脚本会把前端 `package.json` 的版本改成传入的版本号，需要系统有 `zip` 命令。如果直接 `yarn build`，启动时会报 `Static resource version mismatch`，页面仍能用。版本号必须等于 `constants.BackendVersion`。
 - **前端**：用 `yarn`（`npm i -g yarn@1`）。`assets/` 有 husky pre-commit，会对暂存文件跑 prettier（lint-staged）。
 - **类型检查**：`.github/scripts/tsc-check.sh`（需先在 `assets/` 里 `yarn install`）。上游本身就带一批 TS 错误（分叉时 127 条，现在 115 条），基线存在 `.github/tsc-baseline.txt`，脚本会去掉行列号、按字节序排序后对比，出现基线之外的错误就失败。`vite build` 不做类型检查，所以 `yarn build` 通过不代表类型正确。错误减少，或者因为权限位增减导致 `GroupPermission` 类型字面量的报错文本变化时，确认没有真正新增错误后，运行 `.github/scripts/tsc-check.sh --update` 更新基线。
