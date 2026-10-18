@@ -84,6 +84,15 @@ func (s credTokenSource) Token(ctx context.Context) (string, error) {
 	return cred.String(), nil
 }
 
+// Refresh 主机直接强制刷新；从机请求主机强制刷新后拉取新令牌。
+func (s credTokenSource) Refresh(ctx context.Context, stale string) (string, error) {
+	cred, err := s.cm.ForceRefresh(ctx, CredentialKey, credmanager.TokenDigest(stale))
+	if err != nil {
+		return "", err
+	}
+	return cred.String(), nil
+}
+
 // NewDriveClientFromDep 用当前节点的 CredManager 创建 Drive 客户端。
 func NewDriveClientFromDep(dep dependency.Dep, proxy string) (*DriveClient, error) {
 	hc, err := NewHTTPClient(proxy)

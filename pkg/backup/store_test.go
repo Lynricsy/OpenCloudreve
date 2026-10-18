@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -118,12 +119,16 @@ func TestBlobRoundTrip(t *testing.T) {
 }
 
 func TestUploadBlobAbortsWhenContentDoesNotMatchHash(t *testing.T) {
-	_, s := openTestStore(t)
+	fd, s := openTestStore(t)
 	data := randomBytes(t, 1000)
 	wrong := sha256.Sum256([]byte("other"))
 
-	if _, err := s.UploadBlob(context.Background(), nil, wrong[:], bytes.NewReader(data)); err == nil {
-		t.Fatal("UploadBlob() succeeded with mismatching hash")
+	_, err := s.UploadBlob(context.Background(), nil, wrong[:], bytes.NewReader(data))
+	if err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Fatalf("UploadBlob() error = %v, want the source sha256 mismatch", err)
+	}
+	if len(fd.canceled) != 1 {
+		t.Fatalf("canceled sessions = %v, want the aborted session canceled", fd.canceled)
 	}
 	blobs, err := s.ListBlobs(context.Background())
 	if err != nil {
@@ -166,11 +171,11 @@ func TestManifestRoundTripAndWrongKey(t *testing.T) {
 
 	created := time.Unix(1700000000, 0)
 	entries := []ManifestEntry{
-		{FileID: 1, OwnerID: 2, Owner: "a@b.c", Path: "/a.txt", Size: 3, Sha256: "x", Blob: "y", EntityID: 9},
+		{FileID: 1, OwnerID: 2, Owner: "a@b.c", Path: "/a.txt", Size: 3, Sha256: "x", Blob: "y", EntityID: 9, EntityCreated: 1700000000123456},
 		{FileID: 5, OwnerID: 2, Path: "/dir/b.txt"},
 	}
 	var buf bytes.Buffer
-	header, _ := EncodeLine(NewManifestHeader(created, kr, []int{1}))
+	header, _ := EncodeLine(NewManifestHeader(created, kr, []int{1}, "site-a"))
 	buf.Write(header)
 	for i := range entries {
 		line, _ := EncodeLine(&entries[i])
@@ -197,7 +202,7 @@ func TestManifestRoundTripAndWrongKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadManifest() error = %v", err)
 	}
-	if len(m.Entries) != 2 || m.Entries[0] != entries[0] || m.Entries[1] != entries[1] || m.Header.KeyID != kr.ID() {
+	if len(m.Entries) != 2 || m.Entries[0] != entries[0] || m.Entries[1] != entries[1] || m.Header.KeyID != kr.ID() || m.Header.SiteID != "site-a" {
 		t.Fatalf("ReadManifest() = %+v", m)
 	}
 	if _, err := s.ReadManifest(ctx, krOther, snap.ID); err == nil {

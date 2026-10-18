@@ -33,8 +33,10 @@ type (
 	SlaveGDriveBackupState struct {
 		Proxy  string `json:"proxy,omitempty"`
 		RootID string `json:"root_id"`
-		// Key age 私钥，空表示不加密
-		Key      string                     `json:"key,omitempty"`
+		// EncryptKey 主机 Keyring.SlaveKey() 的输出，只含加密用的公钥和 blob 命名密钥，不含私钥；空表示不加密
+		EncryptKey string `json:"encrypt_key,omitempty"`
+		// Nonce 主机为每个批次随机生成，完成后原样带回，主机据此确认结果属于这一批
+		Nonce    string                     `json:"nonce"`
 		Policies map[int]*ent.StoragePolicy `json:"policies,omitempty"`
 		Items    []SlaveGDriveBackupItem    `json:"items,omitempty"`
 		Results  []SlaveGDriveBackupResult  `json:"results,omitempty"`
@@ -86,12 +88,9 @@ func (t *SlaveGDriveBackupTask) Do(ctx context.Context) (task.Status, error) {
 	}
 	t.state = state
 
-	var kr *backup.Keyring
-	if state.Key != "" {
-		var err error
-		if kr, err = backup.ParseKey(state.Key); err != nil {
-			return task.StatusError, fmt.Errorf("%w (%w)", err, queue.CriticalErr)
-		}
+	kr, err := backup.ParseSlaveKey(state.EncryptKey)
+	if err != nil {
+		return task.StatusError, fmt.Errorf("%w (%w)", err, queue.CriticalErr)
 	}
 	dc, err := backup.NewDriveClientFromDep(dep, state.Proxy)
 	if err != nil {
@@ -125,8 +124,8 @@ func (t *SlaveGDriveBackupTask) Do(ctx context.Context) (task.Status, error) {
 		t.Unlock()
 	}
 
-	// 只回传结果
-	state.Items, state.Policies, state.Key = nil, nil, ""
+	// 只回传结果和 nonce
+	state.Items, state.Policies, state.EncryptKey = nil, nil, ""
 	newState, err := json.Marshal(state)
 	if err != nil {
 		return task.StatusError, fmt.Errorf("failed to marshal state: %w", err)
@@ -211,4 +210,19 @@ func (t *SlaveGDriveBackupTask) Progress(ctx context.Context) queue.Progresses {
 	t.Lock()
 	defer t.Unlock()
 	return t.progress
+}
+
+// GDriveBackupNodeAllowed 判断从机 nodeID 是否承载当前备份设置（gdrive_backup_policies，负载均衡策略展开后）中的从机策略。
+// 主机据此只把 Drive 访问令牌（cred_backup_gdrive）发给参与备份的从机。
+func GDriveBackupNodeAllowed(ctx context.Context, dep dependency.Dep, nodeID int) (bool, error) {
+	policies, err := expandPolicies(ctx, dep, dep.SettingProvider().GDriveBackup(ctx).Policies)
+	if err != nil {
+		return false, err
+	}
+	for _, p := range policies {
+		if p.Type == types.PolicyTypeRemote && p.NodeID == nodeID {
+			return true, nil
+		}
+	}
+	return false, nil
 }

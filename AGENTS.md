@@ -77,18 +77,21 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 - **Google Drive 备份**（`pkg/backup` 负责 Drive 客户端、仓库布局、age 加密、凭证；任务在 `workflows/gdrive_{backup,backup_slave,restore}.go`）：
   - Drive 布局：根目录（`ocr_kind=root`）下有 `blobs/<前两位>/<blob名>` 和 `manifests/<时间>.jsonl.gz[.age]`，所有文件带 `ocr_root=<根目录ID>`。blob 名称在明文模式下是 sha256；加密模式下是由私钥派生的 HMAC，因此换密钥等于换一个命名空间。权限范围只有 `drive.file`。
   - 每次运行都完整遍历选定策略（LB 展开为子策略）中、位于“我的文件”下的文件，不使用时间水位。选中条件是主实体已完成上传（`upload_session_id` 为空）；仍在上传中的计入 pending，下次运行时自然会被选中。回收站中的文件不备份。
-  - sha256 从上一份同密钥快照中按实体 ID 复用（实体内容不可变）。Drive 上已有同名 blob 时不上传。失败或 pending 的文件沿用上一份快照中的条目，前提是对应 blob 仍然存在，这样连续失败超过保留期也不会丢掉旧备份。
-  - 从机策略（`remote`）的实体写入本地队列文件，按批派发 `slave_gdrive_backup` 从机任务。从机通过主机的 `/slave/credential/cred_backup_gdrive` 拿 access token，直接读取本地文件、上传到 Drive，主机不经手文件内容。age 私钥和实体解密密钥随任务状态下发给从机，所以主从之间应使用 HTTPS。从机任务丢失（比如从机重启）后会重派，最多 3 次。
-  - 清理顺序：先上传新快照，再删除早于保留期的快照（最新一份始终保留），最后删除不被任何保留快照引用的 blob。如果有恢复任务正在执行，或者任一保留快照无法读取（例如用其他密钥加密），就跳过 blob 清理。
-  - 恢复使用目标用户自己的 FileManager 写入（容量和策略按目标用户计算）。同名文件跳过不覆盖。读到流末尾时校验 sha256，不一致则让上传失败。
-  - 同一时间只允许一个备份任务（`GDriveTaskPending`）。`crontab.Start` 可以重复调用；修改 `cron_gdrive_backup` 后由设置后处理器重建 cron，立即生效。
+  - sha256 从上一份**本站**、同密钥的快照中按实体 ID 复用（实体内容不可变）。清单首行带 `site_id`（`SiteBasic().ID`），`loadPrevious` 只接受 site_id 等于本站的快照；缺少 site_id 的旧快照或其他站点的快照，一律按“没有上一份快照”处理。这是因为重装站点或回滚数据库后，实体 ID 会被重新分配。复用时还要求条目的 `size` 和 `ectime`（实体创建时间，UnixMicro）与当前实体一致。上一份快照的索引全部加载成功后才写入 `rt.prev`/`rt.hashes`，加载失败时保持 nil，重试时会重新加载。Drive 上已有同名 blob 时不上传。失败或 pending 的文件沿用上一份快照中的条目，前提是对应 blob 仍然存在、且所有者 ID 一致，这样连续失败超过保留期也不会丢掉旧备份。主实体为空、但存在未完成上传实体的占位文件计为 pending，不会被写成空文件。
+  - 每轮迭代开始前保存的私有状态就是 checkpoint。清单或远程队列写入、刷盘失败时，回滚到这个 checkpoint（只保留当天的上传计数），重试时把文件截断回 checkpoint 再重放；文件实际长度短于 checkpoint 时报 CriticalErr，不补零。
+  - 从机策略（`remote`）的实体写入本地队列文件，按批派发 `slave_gdrive_backup` 从机任务。从机通过主机的 `/slave/credential/cred_backup_gdrive` 拿 access token，直接读取本地文件、上传到 Drive，主机不经手文件内容。这个凭证只发给托管了备份策略（LB 展开后）的节点，并核对签名节点与请求声明的节点一致（`service/node/credential_scope.go`）。下发给从机的是 `Keyring.SlaveKey()`（只含 recipient 和 nameKey，**不含 age 私钥**），实体解密密钥仍随任务状态下发，所以主从之间应使用 HTTPS。每个批次带随机 `nonce`，从机原样带回；没有 nonce 或 nonce 不一致，都按任务丢失处理（从机重启后数字任务 ID 会被复用）。任务丢失后会重派，最多 3 次。已派发、但结果缺失的实体计为失败并沿用旧条目；实体密钥解不开时，只让该文件失败。主从必须同时升级：旧版本从机不会带回 nonce。
+  - 清理顺序：先上传新快照，再删除早于保留期的快照（最新一份始终保留），最后删除不被任何保留快照引用的 blob。每份保留快照都用 `backup.KeyringForSnapshot` 选择读取格式：明文快照用 nil，同密钥快照用当前 Keyring，其他密钥的快照跳过 blob 清理。
+  - 准入与 GC 租约（`workflows/gdrive_lease.go`）：备份和恢复都必须通过 `EnqueueGDriveBackup` / `EnqueueGDriveRestore` 入队。这两个函数在同一把进程内互斥锁下完成检查和持久化。GC 删除前，在同一把锁下确认没有未结束的恢复任务，然后设置“删除中”标记，删除结束后清除（出错也会清除）。标记存在期间，新的恢复会被拒绝，返回 `ErrGDriveCleanupRunning`（接口返回 409）。这套机制的前提是主机只有一个进程。
+  - 恢复使用目标用户自己的 FileManager 写入（容量和策略按目标用户计算）。同名文件跳过不覆盖。规划阶段校验每个条目：`path` 必须是 Clean 后不变的绝对路径，`sha256` 必须是 64 位十六进制，`size` ≥ 0，并且最终位置不能离开目标目录；不合格的条目计为失败。读取快照和 blob 时使用该快照自己的 Keyring（任务状态里的 `key_id`）。`verifyingReader` 读满 `size` 时会主动探测 EOF 并校验 sha256，失败时扣下最后一段数据，所以分块或 `LimitReader` 读取的驱动（remote/S3 等）也无法提交内容不一致的文件。恢复到原所有者时，要求该 uid 当前的邮箱等于快照里记录的 owner，否则该条目失败。
+  - 同一时间只允许一个备份任务。`crontab.Start` 可以重复调用；修改 `cron_gdrive_backup` 后由设置后处理器重建 cron，立即生效。
+  - Drive 返回 401 时，`TokenSource.Refresh` 会强制刷新一次令牌并重放请求：主机走 `CredManager.ForceRefresh`；从机带上旧令牌的摘要请求 `/slave/credential/:id?stale=`。上传错误保留原始的 `DriveError`；错误信息中会去掉 session URI 的 query，上传失败时会取消该会话。
   - 每日上传上限 `gdrive_backup_daily_limit`（字节，0 不限）：按服务器时区的自然日、主机和从机合计计算。每个备份任务把当天的上传量记在私有状态 `daily_day`/`daily_uploaded`（不设上限时也照常记录），后续任务在 `refreshDailyQuota` 中把同一天其他备份任务的用量加进来；升级前的旧任务没有这两个字段，按当天创建任务的 `uploaded_size` 计入。主机读取的实体在哈希和上传之前检查剩余额度，装不下时不读文件、直接延后（`stats.deferred`，沿用旧快照条目，`daily_limit_reached` 事件只记一次）。从机批次由 `limitBatch` 按剩余额度截取队列前缀，并把整批大小预留在 `inflight.reserved`，批次结算后按实际上传量计入。开头的条目装不下时，如果还有其他批次占着预留就先等待，否则延后，因此即使从机是旧版本也不会超额。单个文件大于整个上限时记为失败，而不是每天延后。
   - 运行记录：两种任务的私有状态都带有 `events`（`{t,l,c,p}`，最多 500 条，超出后丢弃最旧的并累计 `events_dropped`），备份任务还记录 `trigger`（`cron`/`manual`，同时写入 summary）。前端“备份 → 运行记录”页签通过现有的 `/admin/queue` 接口读取，按 `backup.events.<code>` 翻译，并用 `started`/`scan_done`/`manifest_started`/`snapshot_uploaded`/`finished` 推算阶段时间线。新增或改名事件 code 时，前端三种语言的文案要同步改。`task_failed` 只在任务最终失败时由 `OnError` 写入，可重试的错误不记录。
   - 前端页面（`Admin/Backup/Backup.tsx`）分为六个横向页签：运行状态、Google 账号（含代理）、备份设置、加密、快照与恢复、运行记录，URL 参数为 `?tab=`，OAuth 回调结束后回到 `?tab=account`。备份状态由页面统一获取，任务运行中每 5 秒轮询一次，结果分发给各页签。账号和加密页签通过 `SettingsWrapper` 的 `onSaved` 在保存后刷新状态。设置类页签各自用一个 `SettingsWrapper` 读取和保存。传给它的 `settings` 数组必须是模块级常量：`SettingsWrapper` 以这个数组的引用作为 effect 依赖，如果写成内联数组，状态轮询一刷新就会重新拉取设置，并丢掉还没保存的修改。
   - 页签内容统一使用 `Admin/Backup/BackupUi.tsx` 中的组件：`BackupCard`（描边卡片）、`BackupCardHeader`（色调图标、标题、副标题、操作区）、`StatTile`（统计块）、`ToneIcon`。颜色只取主题语义色（`primary`/`success`/`warning`/`error`），并用 `alpha` 生成浅色底，这样深色模式下也能正常显示，不要写死色值。页签枚举 `BackupPageTab` 也定义在这个文件里，避免与 `Backup.tsx` 循环引用。
 
 ### 3.5 新增与改动的 API
-`PATCH /file/policy {uri, policy_id}`（`policy_id` 传 `""` 表示改回继承）、`GET /user/setting/policies`（LB 策略带 `children`/`weight`）、`POST /workflow/relocate {src[], dst_policy_id}`、`GET /workflow/nodes?capability=`；压缩、解压、离线下载接口新增可选参数 `node_id`；`extended_info.storage_policy_inherited`；`/site/ping` 只返回版本号。管理员备份接口位于 `/admin/backup/*`：`GET status`、`POST oauth/signin`、`POST oauth/callback {code,state}`、`DELETE oauth`、`POST key`、`POST run`、`GET snapshots`、`POST snapshots/browse {snapshot_id, uid?, path?}`、`POST restore {snapshot_id, items[{uid,path}], target_uid?, target_dir}`。前端页面是后台侧边栏的“备份”（`/admin/backup`，组件在 `Admin/Backup/`，设置项仍经 `SettingsWrapper` 读写），回调页是 `/admin/backup/oauth`；上游遗留的死路由 `/callback/googledrive/auth` 已删除。
+`PATCH /file/policy {uri, policy_id}`（`policy_id` 传 `""` 表示改回继承）、`GET /user/setting/policies`（LB 策略带 `children`/`weight`）、`POST /workflow/relocate {src[], dst_policy_id}`、`GET /workflow/nodes?capability=`；压缩、解压、离线下载接口新增可选参数 `node_id`；`extended_info.storage_policy_inherited`；`/site/ping` 只返回版本号。管理员备份接口位于 `/admin/backup/*`：`GET status`、`POST oauth/signin`、`POST oauth/callback {code,state}`、`DELETE oauth`、`POST key`、`POST run`（已有备份任务时返回 409）、`GET snapshots`、`POST snapshots/browse {snapshot_id, uid?, path?}`、`POST restore {snapshot_id, items[{uid,path}], target_uid?, target_dir, keep_path?}`：`keep_path=true` 时按原始完整路径恢复，忽略 `target_dir`；否则以所选项的父目录为基准恢复到 `target_dir` 下；GC 删除期间返回 409。前端页面是后台侧边栏的“备份”（`/admin/backup`，组件在 `Admin/Backup/`，设置项仍经 `SettingsWrapper` 读写），回调页是 `/admin/backup/oauth`；上游遗留的死路由 `/callback/googledrive/auth` 已删除。
 
 ### 3.6 官方桌面客户端契约（`cloudreve/desktop`，没有 Pro 门控）
 - **版本**：`/site/ping` 返回的版本必须 ≥ 4.12.0，并且只能是纯数字点分格式（客户端按 `.` 切分后逐段比较数字），**不要**加 `-xxx` 之类的后缀。
@@ -146,4 +149,11 @@ git merge upstream/master
   - 首次全量备份可能受 Google 的上传或 API 限额影响（具体额度因账号类型而异，以 Drive 返回的错误和 Cloud 控制台配额为准）；因限额失败的文件记为失败，下次运行时重试。
   - Drive 新建文件的请求体只能带 `name`/`mimeType`/`parents`/`appProperties`（`driveCreateMeta`）。不要复用响应结构 `DriveFile`：空 `id` 会被 Drive 以 400 `fileIdNotUsable` 拒绝。测试用的假 Drive（`fakedrive_test.go`）对此做了同样的校验。
   - 上游 `SetSetting` 按处理器的函数类型名去重，所有处理器的类型名都相同，所以一次提交里即使涉及多种前置/后置处理器，也只会执行其中一个。备份页面只提交自己的设置项，不受影响；其他设置页签混合提交时可能漏执行处理器。
+  - 升级到 4.19.8 后的第一次备份：旧快照没有 `site_id`，不会被复用，所有文件会重新读取并计算 sha256。blob 已经存在，所以不会重复上传，但要读一遍全部数据；失败的文件也没有旧条目可以沿用。
+  - 审查时发现、但没有修复的问题：
+    - 两个仍在运行的站点共用同一个 Google 账号和备份根目录时，GC 会互相删除对方的快照（`EnsureRoot` 会接管已有的根目录）；
+    - OAuth state 是全站唯一的 KV 键，两名管理员同时授权时会互相覆盖；
+    - 主机的代理设置会原样下发给从机；
+    - 明文模式下清单没有完整性签名；
+    - `ReadManifest`（浏览接口）会把整份清单读进内存。
 - 语言包缓存：前端把语言包缓存在 localStorage，缓存版本是构建时 `public/locales` 的内容哈希（`vite.config.ts` 的 `__LOCALES_HASH__`）。不要去掉这个版本，否则升级后新增的文案会显示成键名，`returnObjects` 数组还会让页面崩溃。

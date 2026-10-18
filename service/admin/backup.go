@@ -245,14 +245,10 @@ func RunBackup(c *gin.Context) error {
 	if dep.SettingProvider().GDriveBackup(c).RefreshToken == "" {
 		return serializer.NewError(serializer.CodeParamErr, "Google Drive account is not connected", nil)
 	}
-	t, err := workflows.NewGDriveBackupTask(c, dep, workflows.GDriveBackupTriggerManual)
-	if err != nil {
+	if err := workflows.EnqueueGDriveBackup(c, dep, workflows.GDriveBackupTriggerManual); err != nil {
 		if errors.Is(err, workflows.ErrGDriveBackupRunning) {
 			return serializer.NewError(serializer.CodeConflict, "A backup task is already running", err)
 		}
-		return serializer.NewError(serializer.CodeDBError, "Failed to create backup task", err)
-	}
-	if err := dep.IoIntenseQueue(c).QueueTask(c, t); err != nil {
 		return serializer.NewError(serializer.CodeInternalSetting, "Failed to queue backup task", err)
 	}
 	return nil
@@ -270,7 +266,8 @@ func openBackup(c *gin.Context) (*backup.Env, error) {
 }
 
 func snapshotReadable(s *backup.Snapshot, kr *backup.Keyring) bool {
-	return s.KeyID == backup.KeyIDPlain || s.KeyID == kr.ID()
+	_, err := backup.KeyringForSnapshot(s.KeyID, kr)
+	return err == nil
 }
 
 // ListBackupSnapshots 列出快照（新→旧）。
@@ -316,10 +313,11 @@ func loadSnapshotManifest(c *gin.Context, env *backup.Env, id string) (*backup.M
 	if idx < 0 {
 		return nil, serializer.NewError(serializer.CodeNotFound, "Snapshot not found", nil)
 	}
-	if !snapshotReadable(&snaps[idx], env.Keyring) {
-		return nil, serializer.NewError(serializer.CodeParamErr, "Snapshot was encrypted with another key: "+snaps[idx].KeyID, nil)
+	snapKr, err := backup.KeyringForSnapshot(snaps[idx].KeyID, env.Keyring)
+	if err != nil {
+		return nil, serializer.NewError(serializer.CodeParamErr, "Snapshot was encrypted with another key: "+snaps[idx].KeyID, err)
 	}
-	m, err := env.Store.ReadManifest(c, env.Keyring, id)
+	m, err := env.Store.ReadManifest(c, snapKr, id)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeInternalSetting, "Failed to read snapshot: "+err.Error(), err)
 	}
@@ -432,7 +430,10 @@ type (
 		SnapshotID string                        `json:"snapshot_id" binding:"required"`
 		Items      []workflows.GDriveRestoreItem `json:"items" binding:"required,min=1"`
 		TargetUID  int                           `json:"target_uid"`
-		TargetDir  string                        `json:"target_dir" binding:"required"`
+		// TargetDir KeepPath 为 false 时必填
+		TargetDir string `json:"target_dir"`
+		// KeepPath 为 true 时按快照中的完整原始路径恢复，忽略 TargetDir
+		KeepPath bool `json:"keep_path"`
 	}
 	RestoreBackupParamCtx struct{}
 )
@@ -440,8 +441,12 @@ type (
 // Restore 创建恢复任务。
 func (s *RestoreBackupService) Restore(c *gin.Context) error {
 	dep := dependency.FromContext(c)
-	if !strings.HasPrefix(s.TargetDir, "/") {
-		return serializer.NewError(serializer.CodeParamErr, "Target folder must start with /", nil)
+	targetDir := "/"
+	if !s.KeepPath {
+		if !strings.HasPrefix(s.TargetDir, "/") {
+			return serializer.NewError(serializer.CodeParamErr, "Target folder must start with /", nil)
+		}
+		targetDir = path.Clean(s.TargetDir)
 	}
 	for i := range s.Items {
 		s.Items[i].Path = path.Clean("/" + s.Items[i].Path)
@@ -452,11 +457,14 @@ func (s *RestoreBackupService) Restore(c *gin.Context) error {
 		}
 	}
 
-	t, err := workflows.NewGDriveRestoreTask(c, s.SnapshotID, s.Items, s.TargetUID, path.Clean(s.TargetDir))
+	t, err := workflows.NewGDriveRestoreTask(c, s.SnapshotID, s.Items, s.TargetUID, targetDir, s.KeepPath)
 	if err != nil {
 		return serializer.NewError(serializer.CodeInternalSetting, "Failed to create restore task", err)
 	}
-	if err := dep.IoIntenseQueue(c).QueueTask(c, t); err != nil {
+	if err := workflows.EnqueueGDriveRestore(c, dep, t); err != nil {
+		if errors.Is(err, workflows.ErrGDriveCleanupRunning) {
+			return serializer.NewError(serializer.CodeConflict, "Backup cleanup is in progress, please retry later", err)
+		}
 		return serializer.NewError(serializer.CodeInternalSetting, "Failed to queue restore task", err)
 	}
 	return nil

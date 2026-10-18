@@ -28,6 +28,14 @@ type fakeDrive struct {
 	// partialAcks 接下来若干次分块 PUT 只确认前 256 KiB
 	partialAcks int
 	chunkPuts   int
+
+	// validToken 非空时，Drive 接口只接受该 access token，其他令牌返回 401；authRejects 记录被拒次数
+	validToken  string
+	authRejects int
+	// initErr 非 nil 时，新建断点续传会话的请求返回该错误
+	initErr *DriveError
+	// canceled 被 DELETE 取消的上传会话
+	canceled []string
 }
 
 type fakeFile struct {
@@ -68,6 +76,41 @@ type tokenFunc func() string
 
 func (f tokenFunc) Token(context.Context) (string, error) { return f(), nil }
 
+func (f tokenFunc) Refresh(context.Context, string) (string, error) { return f(), nil }
+
+// fakeTokens 可观察强制刷新的令牌源。
+type fakeTokens struct {
+	mu         sync.Mutex
+	token      string
+	refreshTo  string
+	refreshErr error
+	stale      []string
+}
+
+func (f *fakeTokens) Token(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.token, nil
+}
+
+func (f *fakeTokens) Refresh(_ context.Context, stale string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stale = append(f.stale, stale)
+	if f.refreshErr != nil {
+		return "", f.refreshErr
+	}
+	f.token = f.refreshTo
+	return f.token, nil
+}
+
+func writeDriveError(w http.ResponseWriter, de *DriveError) {
+	writeJSON(w, de.Status, map[string]any{"error": map[string]any{
+		"message": de.Message,
+		"errors":  []map[string]string{{"reason": de.Reason}},
+	}})
+}
+
 func (fd *fakeDrive) id() string {
 	fd.nextID++
 	return "f" + strconv.Itoa(fd.nextID)
@@ -82,6 +125,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func (fd *fakeDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fd.mu.Lock()
 	defer fd.mu.Unlock()
+
+	// 会话 URI（带 upload_id）与真实 Drive 一样不校验令牌
+	if fd.validToken != "" && r.URL.Path != "/token" && r.URL.Query().Get("upload_id") == "" &&
+		r.Header.Get("Authorization") != "Bearer "+fd.validToken {
+		fd.authRejects++
+		writeDriveError(w, &DriveError{Status: 401, Reason: "authError", Message: "Invalid Credentials"})
+		return
+	}
 
 	switch {
 	case r.URL.Path == "/token":
@@ -115,6 +166,10 @@ func (fd *fakeDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, f.meta)
 		}
 	case r.URL.Path == "/upload/drive/v3/files" && r.Method == http.MethodPost:
+		if fd.initErr != nil {
+			writeDriveError(w, fd.initErr)
+			return
+		}
 		meta, ok := decodeCreateMeta(w, r)
 		if !ok {
 			return
@@ -125,6 +180,12 @@ func (fd *fakeDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	case r.URL.Path == "/upload/drive/v3/files" && r.Method == http.MethodPut:
 		fd.putChunk(w, r)
+	case r.URL.Path == "/upload/drive/v3/files" && r.Method == http.MethodDelete:
+		// 取消会话：Drive 返回 499
+		sid := r.URL.Query().Get("upload_id")
+		delete(fd.sessions, sid)
+		fd.canceled = append(fd.canceled, sid)
+		w.WriteHeader(499)
 	default:
 		http.Error(w, "unexpected "+r.Method+" "+r.URL.String(), 400)
 	}

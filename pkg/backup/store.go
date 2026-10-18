@@ -66,6 +66,8 @@ type (
 		CreatedAt time.Time `json:"created_at"`
 		KeyID     string    `json:"key_id"`
 		Policies  []int     `json:"policies"`
+		// SiteID 生成快照的站点 ID（setting.SiteBasic(ctx).ID）。
+		SiteID string `json:"site_id,omitempty"`
 	}
 
 	// ManifestEntry 清单中的一个文件。Path 为所有者“我的文件”下以 / 开头的完整路径。
@@ -80,6 +82,8 @@ type (
 		Blob       string    `json:"blob"`
 		// EntityID 主版本实体 ID。实体内容不可变，下次备份可直接沿用这里的 sha256，无需重新读取。
 		EntityID int `json:"eid"`
+		// EntityCreated 主版本实体的创建时间（UnixMicro）。
+		EntityCreated int64 `json:"ectime,omitempty"`
 	}
 
 	// Manifest 解析后的清单。
@@ -248,7 +252,9 @@ func (s *Store) uploadStream(ctx context.Context, name, parent string, props map
 	_ = pr.CloseWithError(errors.New("upload aborted"))
 	prodErr := <-done
 	if upErr != nil {
-		if prodErr != nil {
+		// 只有上传因读到生产者的错误而失败时，才报告源错误；否则生产者的错误
+		// 只是上面主动中止管道的结果，应返回上传侧的原始错误（保留 DriveError）。
+		if prodErr != nil && errors.Is(upErr, prodErr) {
 			return nil, prodErr
 		}
 		return nil, upErr
@@ -428,9 +434,9 @@ func (s *Store) ReadManifest(ctx context.Context, kr *Keyring, id string) (*Mani
 	return m, nil
 }
 
-// NewManifestHeader 构造清单首行。
-func NewManifestHeader(createdAt time.Time, kr *Keyring, policies []int) *ManifestHeader {
-	return &ManifestHeader{Version: manifestVersion, CreatedAt: createdAt, KeyID: kr.ID(), Policies: policies}
+// NewManifestHeader 构造清单首行。siteID 为生成快照的站点 ID。
+func NewManifestHeader(createdAt time.Time, kr *Keyring, policies []int, siteID string) *ManifestHeader {
+	return &ManifestHeader{Version: manifestVersion, CreatedAt: createdAt, KeyID: kr.ID(), Policies: policies, SiteID: siteID}
 }
 
 // EncodeLine 把 v 编码为一行 JSON（含换行符）。

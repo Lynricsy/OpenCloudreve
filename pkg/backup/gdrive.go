@@ -82,6 +82,8 @@ type (
 	// TokenSource 提供 Drive 访问令牌。
 	TokenSource interface {
 		Token(ctx context.Context) (string, error)
+		// Refresh 在 Drive 以 401 拒绝 stale 后丢弃缓存并强制刷新，返回新令牌。
+		Refresh(ctx context.Context, stale string) (string, error)
 	}
 
 	// DriveClient 基于 Drive v3 REST 接口的最小客户端。
@@ -261,17 +263,33 @@ func isRetryable(err error) bool {
 }
 
 // do 发送可重放的请求（body 为字节切片），对可重试错误按指数退避重试。成功时返回未关闭的响应。
+// 返回 401 时强制刷新一次令牌后立即重放；仍然 401 则直接返回。
 func (c *DriveClient) do(ctx context.Context, method, rawURL string, header http.Header, body []byte) (*http.Response, error) {
-	var lastErr error
+	var (
+		lastErr   error
+		stale     string // 被 Drive 以 401 拒绝、需要强制刷新的令牌
+		refreshed bool
+	)
 	for attempt := range driveMaxRetries {
-		if attempt > 0 {
-			if err := backoff(ctx, attempt); err != nil {
+		var (
+			token string
+			err   error
+		)
+		if stale != "" {
+			if token, err = c.tokens.Refresh(ctx, stale); err != nil {
+				// 同时保留 Drive 的 401 与刷新失败的真实原因（如 ErrDriveUnauthorized）
+				return nil, fmt.Errorf("%w (failed to refresh access token: %w)", lastErr, err)
+			}
+			stale = ""
+		} else {
+			if attempt > 0 {
+				if err := backoff(ctx, attempt); err != nil {
+					return nil, err
+				}
+			}
+			if token, err = c.tokens.Token(ctx); err != nil {
 				return nil, err
 			}
-		}
-		token, err := c.tokens.Token(ctx)
-		if err != nil {
-			return nil, err
 		}
 		var reader io.Reader
 		if body != nil {
@@ -298,6 +316,12 @@ func (c *DriveClient) do(ctx context.Context, method, rawURL string, header http
 		}
 		lastErr = decodeDriveError(resp)
 		resp.Body.Close()
+		if resp.StatusCode == http.StatusUnauthorized && !refreshed {
+			// 令牌可能在本地过期时间之前就被服务端判定失效，刷新令牌通常仍然有效
+			refreshed = true
+			stale = token
+			continue
+		}
 		if !isRetryable(lastErr) {
 			return nil, lastErr
 		}
@@ -408,6 +432,7 @@ func (c *DriveClient) Download(ctx context.Context, id string) (io.ReadCloser, e
 }
 
 // Upload 以断点续传方式上传 r 的全部内容（长度事先未知）。每个分块失败后会查询服务端已接收的偏移并续传。
+// 上传失败时尽力取消会话：session URI 在有效期内无需令牌即可继续上传。
 func (c *DriveClient) Upload(ctx context.Context, name, parent string, props map[string]string, r io.Reader) (*DriveFile, error) {
 	meta, err := json.Marshal(&driveCreateMeta{Name: name, Parents: []string{parent}, AppProperties: props})
 	if err != nil {
@@ -424,6 +449,15 @@ func (c *DriveClient) Upload(ctx context.Context, name, parent string, props map
 		return nil, errors.New("google drive did not return an upload session")
 	}
 
+	f, err := c.uploadSession(ctx, session, r)
+	if err != nil {
+		c.cancelSession(ctx, session)
+		return nil, err
+	}
+	return f, nil
+}
+
+func (c *DriveClient) uploadSession(ctx context.Context, session string, r io.Reader) (*DriveFile, error) {
 	buf := make([]byte, uploadChunkSize)
 	var offset int64
 	for {
@@ -444,6 +478,36 @@ func (c *DriveClient) Upload(ctx context.Context, name, parent string, props map
 			return f, nil
 		}
 	}
+}
+
+// cancelSession 尽力取消断点续传会话（DELETE session URI），忽略结果。ctx 已取消时仍会发送。
+func (c *DriveClient) cancelSession(ctx context.Context, session string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, session, nil)
+	if err != nil {
+		return
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	resp.Body.Close()
+}
+
+// redactSessionError 去掉网络错误中 session URI 的 query（upload_id），避免它随错误进入日志和任务状态。
+func redactSessionError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		if u, perr := url.Parse(ue.URL); perr == nil {
+			u.RawQuery, u.Fragment = "", ""
+			ue.URL = u.String()
+		} else {
+			ue.URL = "<upload session>"
+		}
+	}
+	return err
 }
 
 // putChunk 发送一个分块。非最终分块成功时返回 (nil, nil)，最终分块返回创建的文件。
@@ -475,7 +539,7 @@ func (c *DriveClient) putChunk(ctx context.Context, session string, data []byte,
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPut, session, body)
 		if err != nil {
-			return nil, err
+			return nil, redactSessionError(err)
 		}
 		req.ContentLength = size
 		req.Header.Set("Content-Range", rng)
@@ -523,9 +587,9 @@ func (c *DriveClient) putChunk(ctx context.Context, session string, data []byte,
 				}
 			}
 		} else {
-			lastErr = err
+			lastErr = redactSessionError(err)
 			if !isRetryable(err) {
-				return nil, err
+				return nil, lastErr
 			}
 		}
 		// 失败：退避后先查询服务端已接收的偏移。

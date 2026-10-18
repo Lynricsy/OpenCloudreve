@@ -3,6 +3,7 @@ package workflows
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -95,6 +96,13 @@ type (
 		PollErrors  int   `json:"poll_errors,omitempty"`
 		// Reserved 设置了每日上传上限时，这一批预留的上传额度（批内实体大小之和），完成后按实际上传量结算
 		Reserved int64 `json:"reserved,omitempty"`
+		// Nonce 每次派发随机生成，从机在状态中原样带回。从机重启后任务 ID 会被复用，
+		// 不一致说明同一 ID 上是另一个任务，按从机任务丢失处理
+		Nonce string `json:"nonce,omitempty"`
+		// Dispatched 实际发给从机的实体 ID。结算时只有不在其中的实体（派发时已被删除）可以没有结果
+		Dispatched []int `json:"dispatched,omitempty"`
+		// Rejected 派发时就在主机上失败、没有发给从机的实体（如实体密钥解不开）：实体 ID → 原因，结算时记为失败
+		Rejected map[int]string `json:"rejected,omitempty"`
 	}
 
 	// GDriveTaskEvent 任务事件日志中的一条，前端按 code 翻译
@@ -144,9 +152,9 @@ type (
 		policies map[int]*ent.StoragePolicy
 		// blobs Drive 上已有的 blob：名称 → 文件 ID
 		blobs map[string]string
-		// prev 上一份同密钥快照：文件 ID → 条目；hashes：实体 ID → sha256
+		// prev 上一份本站、同密钥快照：文件 ID → 条目；hashes：实体 ID → 该实体的 sha256 与校验字段
 		prev   map[int]backup.ManifestEntry
-		hashes map[int]string
+		hashes map[int]gdriveKnownHash
 		dirs   map[int]gdriveDir
 		owners map[int]string
 
@@ -213,12 +221,9 @@ func cronGDriveBackup(ctx context.Context) {
 		return
 	}
 
-	t, err := NewGDriveBackupTask(ctx, dep, GDriveBackupTriggerCron)
-	if err != nil {
+	if err := EnqueueGDriveBackup(ctx, dep, GDriveBackupTriggerCron); errors.Is(err, ErrGDriveBackupRunning) {
 		l.Warning("Skip scheduled Google Drive backup: %s", err)
-		return
-	}
-	if err := dep.IoIntenseQueue(ctx).QueueTask(ctx, t); err != nil {
+	} else if err != nil {
 		l.Error("Failed to queue Google Drive backup task: %s", err)
 	}
 }
@@ -238,16 +243,9 @@ func GDriveTaskPending(ctx context.Context, dep dependency.Dep, taskType string)
 	return len(tasks) > 0, nil
 }
 
-// NewGDriveBackupTask 创建备份任务；已有备份任务未结束时返回 ErrGDriveBackupRunning。
+// newGDriveBackupTask 构造备份任务，只由 EnqueueGDriveBackup 在准入锁下调用。
 // trigger 为触发方式（GDriveBackupTriggerCron / GDriveBackupTriggerManual），记录在任务状态中。
-func NewGDriveBackupTask(ctx context.Context, dep dependency.Dep, trigger string) (queue.Task, error) {
-	running, err := GDriveTaskPending(ctx, dep, queue.GDriveBackupTaskType)
-	if err != nil {
-		return nil, err
-	}
-	if running {
-		return nil, ErrGDriveBackupRunning
-	}
+func newGDriveBackupTask(ctx context.Context, trigger string) (queue.Task, error) {
 	stateBytes, err := json.Marshal(&GDriveBackupTaskState{Trigger: trigger})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal state: %w", err)
@@ -327,8 +325,10 @@ func (m *GDriveBackupTask) Do(ctx context.Context) (task.Status, error) {
 	dep := dependency.FromContext(ctx)
 	m.l = dep.Logger()
 
+	// committed 上一次成功提交的状态（checkpoint），与磁盘上的临时文件一致
+	committed := m.State()
 	state := &GDriveBackupTaskState{}
-	if err := json.Unmarshal([]byte(m.State()), state); err != nil {
+	if err := json.Unmarshal([]byte(committed), state); err != nil {
 		return task.StatusError, fmt.Errorf("failed to unmarshal state: %w", err)
 	}
 	m.Lock()
@@ -336,8 +336,13 @@ func (m *GDriveBackupTask) Do(ctx context.Context) (task.Status, error) {
 	m.Unlock()
 
 	next, err := m.run(ctx, dep)
-	if closeErr := m.closeWriters(); closeErr != nil && err == nil {
-		next, err = task.StatusError, closeErr
+	if closeErr := m.closeWriters(); closeErr != nil {
+		if err == nil {
+			next, err = task.StatusError, closeErr
+		}
+		if rbErr := m.rollback(committed); rbErr != nil {
+			return task.StatusError, errors.Join(err, rbErr)
+		}
 	}
 
 	m.Lock()
@@ -348,6 +353,21 @@ func (m *GDriveBackupTask) Do(ctx context.Context) (task.Status, error) {
 	}
 	m.Task.PrivateState = string(newState)
 	return next, err
+}
+
+// rollback 本轮有内容没能写入磁盘（写入或刷盘失败）时回退到本轮开始时的 checkpoint：
+// 游标、清单长度、统计与从机队列进度都不前移，重试时文件截断到 checkpoint 的长度后重放本轮。
+// 本轮已经上传到 Drive 的字节仍计入当天的上传量；重放时 Drive 上已有这些 blob，不会重复上传。
+func (m *GDriveBackupTask) rollback(committed string) error {
+	state := &GDriveBackupTaskState{}
+	if err := json.Unmarshal([]byte(committed), state); err != nil {
+		return fmt.Errorf("failed to unmarshal state: %w", err)
+	}
+	m.Lock()
+	state.DailyDay, state.DailyUploaded = m.state.DailyDay, m.state.DailyUploaded
+	m.state = state
+	m.Unlock()
+	return nil
 }
 
 func (m *GDriveBackupTask) run(ctx context.Context, dep dependency.Dep) (task.Status, error) {
@@ -455,7 +475,7 @@ func (m *GDriveBackupTask) init(ctx context.Context, dep dependency.Dep) (task.S
 	}
 
 	now := time.Now()
-	header, err := backup.EncodeLine(backup.NewManifestHeader(now, env.Keyring, ids))
+	header, err := backup.EncodeLine(backup.NewManifestHeader(now, env.Keyring, ids, dep.SettingProvider().SiteBasic(ctx).ID))
 	if err != nil {
 		return task.StatusError, err
 	}
@@ -531,18 +551,29 @@ func (m *GDriveBackupTask) ensureRuntime(ctx context.Context, dep dependency.Dep
 		m.event(gdriveEventInfo, "blobs_listed", map[string]any{"count": len(blobs)})
 	}
 	if rt.prev == nil {
-		if err := m.loadPrevious(ctx); err != nil {
+		if err := m.loadPrevious(ctx, dep.SettingProvider().SiteBasic(ctx).ID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// loadPrevious 读取最近一份用当前密钥生成的快照，用于复用 sha256 与失败时沿用旧条目。
-func (m *GDriveBackupTask) loadPrevious(ctx context.Context) error {
+// gdriveKnownHash 上一份快照中记录的实体 sha256。复用前核对大小与创建时间，防止实体 ID 被重新分配后串用。
+type gdriveKnownHash struct {
+	sha     string
+	size    int64
+	created int64
+}
+
+// errForeignSiteSnapshot 快照不是本站生成的（或是没有站点标识的旧快照），不能用于复用与沿用。
+var errForeignSiteSnapshot = errors.New("snapshot was created by another site")
+
+// loadPrevious 读取最近一份由本站用当前密钥生成的快照，用于复用 sha256 与失败时沿用旧条目。
+// 其他站点的快照（重装后接管的旧根目录、共用账号的其他站点）与没有站点标识的旧快照一律忽略：
+// 它们的文件 ID 与实体 ID 和本站数据库无关。
+// 索引在局部构建，全部成功后才赋给 rt.prev/rt.hashes；出错时两者保持 nil，重试时重新加载。
+func (m *GDriveBackupTask) loadPrevious(ctx context.Context, siteID string) error {
 	rt := m.rt
-	rt.prev = make(map[int]backup.ManifestEntry)
-	rt.hashes = make(map[int]string)
 	snaps, err := rt.env.Store.ListSnapshots(ctx)
 	if err != nil {
 		return err
@@ -552,14 +583,23 @@ func (m *GDriveBackupTask) loadPrevious(ctx context.Context) error {
 			continue
 		}
 		prev := make(map[int]backup.ManifestEntry)
-		hashes := make(map[int]string)
-		err := rt.env.Store.ScanManifest(ctx, rt.env.Keyring, s.ID, nil, func(e *backup.ManifestEntry) error {
+		hashes := make(map[int]gdriveKnownHash)
+		err := rt.env.Store.ScanManifest(ctx, rt.env.Keyring, s.ID, func(h *backup.ManifestHeader) error {
+			if siteID == "" || h.SiteID != siteID {
+				return errForeignSiteSnapshot
+			}
+			return nil
+		}, func(e *backup.ManifestEntry) error {
 			prev[e.FileID] = *e
 			if e.EntityID > 0 {
-				hashes[e.EntityID] = e.Sha256
+				hashes[e.EntityID] = gdriveKnownHash{sha: e.Sha256, size: e.Size, created: e.EntityCreated}
 			}
 			return nil
 		})
+		if errors.Is(err, errForeignSiteSnapshot) {
+			m.l.Info("Snapshot %q was not created by this site, ignore it.", s.Name)
+			continue
+		}
 		if err != nil {
 			m.l.Warning("Failed to read previous snapshot %q, try an older one: %s", s.Name, err)
 			m.event(gdriveEventWarning, "prev_snapshot_unreadable", map[string]any{"snapshot": s.Name, "error": err.Error()})
@@ -570,6 +610,7 @@ func (m *GDriveBackupTask) loadPrevious(ctx context.Context) error {
 		m.event(gdriveEventInfo, "prev_snapshot_loaded", map[string]any{"snapshot": s.Name, "files": len(prev)})
 		return nil
 	}
+	rt.prev, rt.hashes = make(map[int]backup.ManifestEntry), make(map[int]gdriveKnownHash)
 	m.event(gdriveEventInfo, "no_prev_snapshot", nil)
 	return nil
 }
@@ -629,6 +670,10 @@ func (m *GDriveBackupTask) scan(ctx context.Context, dep dependency.Dep) (task.S
 			return task.StatusError, fmt.Errorf("failed to load entities: %w", err)
 		}
 		entityMap := lo.KeyBy(entities, func(e *ent.Entity) int { return e.ID })
+		uploading, err := uploadingPlaceholders(ctx, client, lo.FilterMap(files, func(f *ent.File, _ int) (int, bool) { return f.ID, f.PrimaryEntity == 0 }))
+		if err != nil {
+			return task.StatusError, err
+		}
 		if err := m.resolveDirs(ctx, client, lo.Map(files, func(f *ent.File, _ int) int { return f.FileChildren })); err != nil {
 			return task.StatusError, err
 		}
@@ -643,7 +688,7 @@ func (m *GDriveBackupTask) scan(ctx context.Context, dep dependency.Dep) (task.S
 			if ctx.Err() != nil {
 				return m.suspendForShutdown()
 			}
-			if err := m.processFile(ctx, fm, f, entityMap[f.PrimaryEntity]); err != nil {
+			if err := m.processFile(ctx, fm, f, entityMap[f.PrimaryEntity], uploading[f.ID]); err != nil {
 				if ctx.Err() != nil {
 					// 服务关闭中断：当前文件下次重新处理
 					return m.suspendForShutdown()
@@ -747,8 +792,23 @@ func (m *GDriveBackupTask) resolveOwners(ctx context.Context, client *ent.Client
 	return nil
 }
 
+// uploadingPlaceholders 在没有主实体的文件中找出带有未完成上传实体的占位文件（首次上传尚未完成）。
+func uploadingPlaceholders(ctx context.Context, client *ent.Client, ids []int) (map[int]bool, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	found, err := client.File.Query().
+		Where(file.IDIn(ids...), file.HasEntitiesWith(entity.UploadSessionIDNotNil())).
+		IDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load uploading placeholders: %w", err)
+	}
+	return lo.SliceToMap(found, func(id int) (int, bool) { return id, true }), nil
+}
+
 // processFile 处理一个文件。返回的错误只表示任务级故障（如写本地清单失败），单个文件的读取/上传失败计入 Failed。
-func (m *GDriveBackupTask) processFile(ctx context.Context, fm manager.FileManager, f *ent.File, e *ent.Entity) error {
+// uploading 表示没有主实体的文件带有未完成的上传实体（占位文件）。
+func (m *GDriveBackupTask) processFile(ctx context.Context, fm manager.FileManager, f *ent.File, e *ent.Entity, uploading bool) error {
 	dir, ok := m.rt.dirs[f.FileChildren]
 	if !ok || !dir.my {
 		// 回收站中的文件不备份；删除前的版本仍保留在旧快照中
@@ -764,6 +824,13 @@ func (m *GDriveBackupTask) processFile(ctx context.Context, fm manager.FileManag
 	}
 
 	if f.PrimaryEntity == 0 {
+		if uploading {
+			// 首次上传尚未完成的占位文件：不是空文件，本次计为 pending，下次运行重新选中
+			m.Lock()
+			m.state.Stats.Pending++
+			m.Unlock()
+			return m.carryOver(&entry)
+		}
 		entry.Sha256 = emptySha256
 		return m.writeEntry(&entry)
 	}
@@ -775,12 +842,13 @@ func (m *GDriveBackupTask) processFile(ctx context.Context, fm manager.FileManag
 		m.Lock()
 		m.state.Stats.Pending++
 		m.Unlock()
-		return m.carryOver(f.ID)
+		return m.carryOver(&entry)
 	}
 
 	entry.EntityID = e.ID
 	entry.Size = e.Size
-	sha := m.rt.hashes[e.ID]
+	entry.EntityCreated = e.CreatedAt.UnixMicro()
+	sha := m.knownHash(&entry)
 	if sha != "" {
 		sum, err := hex.DecodeString(sha)
 		if err == nil {
@@ -888,12 +956,29 @@ func (m *GDriveBackupTask) fail(entry *backup.ManifestEntry, cause error) error 
 		m.state.add(gdriveEventWarning, "failures_capped", map[string]any{"max": gdriveMaxErrors})
 	}
 	m.Unlock()
-	return m.carryOver(entry.FileID)
+	return m.carryOver(entry)
 }
 
-func (m *GDriveBackupTask) carryOver(fileID int) error {
-	prev, ok := m.rt.prev[fileID]
-	if !ok {
+// knownHash 返回上一份快照中记录的该实体 sha256。只有大小与实体创建时间都一致时才复用，
+// 否则（实体 ID 被重新分配、条目缺少校验字段）返回空字符串，重新计算。
+func (m *GDriveBackupTask) knownHash(entry *backup.ManifestEntry) string {
+	known, ok := m.rt.hashes[entry.EntityID]
+	if !ok || known.size != entry.Size || known.created != entry.EntityCreated {
+		return ""
+	}
+	return known.sha
+}
+
+// carryOver 沿用上一份快照中该文件的条目（若其 blob 仍存在）。cur 为按当前文件构造的条目，
+// 用于核对旧条目确实还对应这个文件：所有者必须一致；旧条目与当前主实体 ID 相同时，大小和实体创建时间也必须一致，
+// 不一致说明 ID 已被重新分配给别的文件或实体，不能沿用。
+func (m *GDriveBackupTask) carryOver(cur *backup.ManifestEntry) error {
+	prev, ok := m.rt.prev[cur.FileID]
+	if !ok || prev.OwnerID != cur.OwnerID {
+		return nil
+	}
+	if cur.EntityID > 0 && prev.EntityID == cur.EntityID &&
+		(prev.Size != cur.Size || prev.EntityCreated != cur.EntityCreated) {
 		return nil
 	}
 	if prev.Blob != "" {
@@ -1011,7 +1096,7 @@ func (m *GDriveBackupTask) deferUpload(entry *backup.ManifestEntry) error {
 		m.state.add(gdriveEventWarning, "daily_limit_reached", map[string]any{"limit": m.rt.dailyLimit})
 	}
 	m.Unlock()
-	return m.carryOver(entry.FileID)
+	return m.carryOver(entry)
 }
 
 func openBuffered(p string, size int64) (*bufferedFile, error) {
@@ -1019,8 +1104,7 @@ func openBuffered(p string, size int64) (*bufferedFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 截断到已持久化的长度：丢弃上次中断时写入但未记录到任务状态的内容
-	if err := f.Truncate(size); err != nil {
+	if err := truncateToCheckpoint(f, size); err != nil {
 		f.Close()
 		return nil, err
 	}
@@ -1029,6 +1113,29 @@ func openBuffered(p string, size int64) (*bufferedFile, error) {
 		return nil, err
 	}
 	return &bufferedFile{f: f, w: bufio.NewWriterSize(f, 256<<10)}, nil
+}
+
+// truncateToCheckpoint 把文件截断到已持久化的长度 size：丢弃上次中断或刷盘失败时写入、但未记录到任务状态的内容。
+// 文件比 size 短说明已提交的内容丢失了，直接报错（不可重试），不能截断扩展成补零的洞。
+func truncateToCheckpoint(f *os.File, size int64) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() < size {
+		return fmt.Errorf("%s has %d bytes, shorter than the committed %d bytes (%w)", f.Name(), info.Size(), size, queue.CriticalErr)
+	}
+	return f.Truncate(size)
+}
+
+// finalizeManifest 上传前把本地清单截断到已提交的长度。
+func finalizeManifest(p string, size int64) error {
+	f, err := os.OpenFile(p, os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	err = truncateToCheckpoint(f, size)
+	return errors.Join(err, f.Close())
 }
 
 func (b *bufferedFile) close() error {
@@ -1259,28 +1366,37 @@ func (m *GDriveBackupTask) dispatchBatch(ctx context.Context, dep dependency.Dep
 	}
 
 	known := lo.SliceToMap(lines, func(l gdrivePendingLine) (int, string) { return l.Entry.EntityID, l.Entry.Sha256 })
-	state := &SlaveGDriveBackupState{
-		Proxy:    m.rt.env.Config.Proxy,
-		RootID:   m.rt.env.Store.Root(),
-		Policies: make(map[int]*ent.StoragePolicy),
+	nonce, err := newBatchNonce()
+	if err != nil {
+		return err
 	}
-	if m.rt.env.Keyring != nil {
-		state.Key = m.rt.env.Config.Key
+	b := &GDriveRemoteBatch{End: end, Reserved: reserved, Nonce: nonce}
+	// 从机只需要加密用的公钥和 blob 命名密钥，私钥只留在主机
+	state := &SlaveGDriveBackupState{
+		Proxy:      m.rt.env.Config.Proxy,
+		RootID:     m.rt.env.Store.Root(),
+		EncryptKey: m.rt.env.Keyring.SlaveKey(),
+		Nonce:      nonce,
+		Policies:   make(map[int]*ent.StoragePolicy),
 	}
 	for _, e := range entities {
-		e, err := decryptEntityKeyIfNeeded(masterKey, e)
+		de, err := decryptEntityKeyIfNeeded(masterKey, e)
 		if err != nil {
-			return fmt.Errorf("failed to decrypt key of entity %d: %w", e.ID, err)
+			// 实体密钥解不开只影响引用它的文件：不派发，结算这一批时记为失败并沿用旧条目
+			if b.Rejected == nil {
+				b.Rejected = make(map[int]string)
+			}
+			b.Rejected[e.ID] = fmt.Sprintf("failed to decrypt key of entity %d: %s", e.ID, err)
+			continue
 		}
-		state.Items = append(state.Items, SlaveGDriveBackupItem{Entity: e, Sha256: known[e.ID]})
-		state.Policies[e.StoragePolicyEntities] = m.rt.policies[e.StoragePolicyEntities]
+		state.Items = append(state.Items, SlaveGDriveBackupItem{Entity: de, Sha256: known[de.ID]})
+		state.Policies[de.StoragePolicyEntities] = m.rt.policies[de.StoragePolicyEntities]
+		b.Dispatched = append(b.Dispatched, de.ID)
 	}
 	if len(state.Items) == 0 {
-		// 实体都已被删除（文件在备份期间被删除或覆盖），直接跳过这一批
-		m.Lock()
-		n.Done, n.Attempts = end, 0
-		m.Unlock()
-		return nil
+		// 没有需要从机处理的实体（都已被删除，或在主机上就已失败），直接结算这一批
+		_, err := m.settleBatch(nodeID, n, b, nil)
+		return err
 	}
 
 	payload, err := json.Marshal(state)
@@ -1296,8 +1412,9 @@ func (m *GDriveBackupTask) dispatchBatch(ctx context.Context, dep dependency.Dep
 	}
 
 	m.l.Info("Dispatched %d entities to slave node %d as task %d", len(state.Items), nodeID, taskID)
+	b.SlaveTaskID = taskID
 	m.Lock()
-	n.Inflight = &GDriveRemoteBatch{SlaveTaskID: taskID, End: end, Reserved: reserved}
+	n.Inflight = b
 	m.state.add(gdriveEventInfo, "remote_dispatched", map[string]any{
 		"node_id":       nodeID,
 		"node_name":     node.Name(),
@@ -1306,6 +1423,15 @@ func (m *GDriveBackupTask) dispatchBatch(ctx context.Context, dep dependency.Dep
 	})
 	m.Unlock()
 	return nil
+}
+
+// newBatchNonce 生成从机批次的随机标识。
+func newBatchNonce() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate batch nonce: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // limitBatch 按当天剩余的上传额度截取这一批的前缀，返回截取后的条目、结束偏移与预留的额度。
@@ -1372,14 +1498,15 @@ func (m *GDriveBackupTask) pollBatch(ctx context.Context, dep dependency.Dep, np
 			}
 		}
 		// 从机重启后任务丢失：重新派发
-		lines, end, rerr := readPendingLines(m.pendingPath(nodeID), n.Done, gdriveRemoteBatch, b.End)
-		if rerr != nil {
-			return fmt.Errorf("failed to read remote queue: %w", rerr)
-		}
-		m.Lock()
-		n.Inflight = nil
-		m.Unlock()
-		return m.retryOrFail(ctx, dep, nodeID, node, lines, end, n, fmt.Errorf("slave task lost: %w", err))
+		return m.batchLost(ctx, dep, nodeID, node, n, fmt.Errorf("slave task lost: %w", err))
+	}
+
+	// 从机重启后任务 ID 从头分配，同一 ID 上可能是另一个任务：nonce 对不上同样按任务丢失处理
+	var tag struct {
+		Nonce string `json:"nonce"`
+	}
+	if json.Unmarshal([]byte(summary.PrivateState), &tag) != nil || b.Nonce == "" || tag.Nonce != b.Nonce {
+		return m.batchLost(ctx, dep, nodeID, node, n, fmt.Errorf("slave task lost: task %d does not belong to this batch", b.SlaveTaskID))
 	}
 
 	switch summary.Status {
@@ -1388,44 +1515,39 @@ func (m *GDriveBackupTask) pollBatch(ctx context.Context, dep dependency.Dep, np
 		if err := json.Unmarshal([]byte(summary.PrivateState), res); err != nil {
 			return fmt.Errorf("failed to parse slave task result: %w", err)
 		}
-		if err := m.applyResults(nodeID, n, res.Results); err != nil {
+		c, err := m.settleBatch(nodeID, n, b, res.Results)
+		if err != nil {
 			return err
-		}
-		var uploaded, reused, failed int
-		for _, r := range res.Results {
-			switch {
-			case r.Error != "":
-				failed++
-			case r.Uploaded:
-				uploaded++
-			default:
-				reused++
-			}
 		}
 		m.event(gdriveEventInfo, "remote_batch_done", map[string]any{
 			"node_id":       nodeID,
 			"node_name":     node.Name(),
 			"slave_task_id": b.SlaveTaskID,
-			"uploaded":      uploaded,
-			"reused":        reused,
-			"failed":        failed,
+			"uploaded":      c.uploaded,
+			"reused":        c.reused,
+			"failed":        c.failed,
 		})
 		return nil
 	case task.StatusError, task.StatusCanceled:
-		lines, end, rerr := readPendingLines(m.pendingPath(nodeID), n.Done, gdriveRemoteBatch, b.End)
-		if rerr != nil {
-			return fmt.Errorf("failed to read remote queue: %w", rerr)
-		}
-		m.Lock()
-		n.Inflight = nil
-		m.Unlock()
-		return m.retryOrFail(ctx, dep, nodeID, node, lines, end, n, fmt.Errorf("slave task failed: %s", summary.Error))
+		return m.batchLost(ctx, dep, nodeID, node, n, fmt.Errorf("slave task failed: %s", summary.Error))
 	default:
 		m.Lock()
 		b.PollErrors = 0
 		m.Unlock()
 		return nil
 	}
+}
+
+// batchLost 放弃已派发的这一批：未超过尝试次数时重新派发，否则记为失败。
+func (m *GDriveBackupTask) batchLost(ctx context.Context, dep dependency.Dep, nodeID int, node cluster.Node, n *GDriveRemoteNode, cause error) error {
+	lines, end, err := readPendingLines(m.pendingPath(nodeID), n.Done, gdriveRemoteBatch, n.Inflight.End)
+	if err != nil {
+		return fmt.Errorf("failed to read remote queue: %w", err)
+	}
+	m.Lock()
+	n.Inflight = nil
+	m.Unlock()
+	return m.retryOrFail(ctx, dep, nodeID, node, lines, end, n, cause)
 }
 
 // retryOrFail 未超过尝试次数时保持偏移不变以便重新派发，否则把这一批记为失败。node 为空时按 ID 查询节点名称。
@@ -1468,46 +1590,68 @@ func (m *GDriveBackupTask) failRange(lines []gdrivePendingLine, end int64, n *GD
 	return nil
 }
 
-func (m *GDriveBackupTask) applyResults(nodeID int, n *GDriveRemoteNode, results []SlaveGDriveBackupResult) error {
-	lines, end, err := readPendingLines(m.pendingPath(nodeID), n.Done, gdriveRemoteBatch, n.Inflight.End)
+// gdriveBatchCounts 一批结算后的文件数，用于 remote_batch_done 事件
+type gdriveBatchCounts struct {
+	uploaded, reused, failed int
+}
+
+// settleBatch 按从机结果结算队列 [n.Done, b.End)，把成功的条目写入清单，并推进 n.Done。
+// 派发时已被删除的实体（不在 b.Dispatched 中）直接跳过；在主机上就已失败的实体（b.Rejected）
+// 和已派发但结果缺失的实体记为失败，沿用上一份快照中的条目。
+func (m *GDriveBackupTask) settleBatch(nodeID int, n *GDriveRemoteNode, b *GDriveRemoteBatch, results []SlaveGDriveBackupResult) (gdriveBatchCounts, error) {
+	var c gdriveBatchCounts
+	lines, end, err := readPendingLines(m.pendingPath(nodeID), n.Done, gdriveRemoteBatch, b.End)
 	if err != nil {
-		return fmt.Errorf("failed to read remote queue: %w", err)
+		return c, fmt.Errorf("failed to read remote queue: %w", err)
 	}
+	dispatched := lo.SliceToMap(b.Dispatched, func(id int) (int, bool) { return id, true })
 	byEntity := lo.KeyBy(results, func(r SlaveGDriveBackupResult) int { return r.EntityID })
 	counted := make(map[int]bool)
 	for i := range lines {
 		entry := &lines[i].Entry
+		var cause error
 		r, ok := byEntity[entry.EntityID]
-		if !ok {
+		switch reason, rejected := b.Rejected[entry.EntityID]; {
+		case rejected:
+			cause = errors.New(reason)
+		case !dispatched[entry.EntityID]:
 			// 实体在派发前已被删除
 			continue
+		case !ok:
+			cause = fmt.Errorf("slave node returned no result for entity %d", entry.EntityID)
+		case r.Error != "":
+			cause = errors.New(r.Error)
 		}
-		if r.Error != "" {
-			if err := m.fail(entry, errors.New(r.Error)); err != nil {
-				return err
+		if cause != nil {
+			c.failed++
+			if err := m.fail(entry, cause); err != nil {
+				return c, err
 			}
 			continue
 		}
+
 		entry.Sha256, entry.Blob = r.Sha256, r.Blob
 		m.rt.blobs[r.Blob] = r.BlobID
 		m.Lock()
 		if r.Uploaded && !counted[r.EntityID] {
+			c.uploaded++
 			m.state.Stats.Uploaded++
 			m.state.Stats.UploadedSize += entry.Size
 			m.addDailyUploaded(entry.Size)
 		} else {
+			c.reused++
 			m.state.Stats.Reused++
 		}
 		m.Unlock()
 		counted[r.EntityID] = true
 		if err := m.writeEntry(entry); err != nil {
-			return err
+			return c, err
 		}
 	}
 	m.Lock()
 	n.Done, n.Attempts, n.Inflight = end, 0, nil
 	m.Unlock()
-	return nil
+	return c, nil
 }
 
 func (m *GDriveBackupTask) awaitRemote(ctx context.Context, dep dependency.Dep) (task.Status, error) {
@@ -1530,7 +1674,7 @@ func (m *GDriveBackupTask) uploadManifest(ctx context.Context) (task.Status, err
 		return task.StatusError, err
 	}
 	p := filepath.Join(m.state.TempDir, gdriveManifestFile)
-	if err := os.Truncate(p, m.state.ManifestSize); err != nil {
+	if err := finalizeManifest(p, m.state.ManifestSize); err != nil {
 		return task.StatusError, fmt.Errorf("failed to finalize manifest: %w", err)
 	}
 	f, err := m.rt.env.Store.UploadManifest(ctx, m.rt.env.Keyring, p, m.state.StartedAt, m.state.Stats.Files, m.state.Stats.Size)
@@ -1560,15 +1704,17 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 		return task.StatusProcessing, nil
 	}
 
-	restoring, err := GDriveTaskPending(ctx, dep, queue.GDriveRestoreTaskType)
+	// 在准入锁下确认没有恢复任务并进入删除阶段；删除结束前新的恢复任务会被 EnqueueGDriveRestore 拒绝
+	release, ok, err := beginGDriveCleanup(ctx, dep)
 	if err != nil {
 		return task.StatusError, err
 	}
-	if restoring {
+	if !ok {
 		m.l.Info("A restore task is running, skip cleaning up expired backups.")
 		m.event(gdriveEventWarning, "gc_skipped_restoring", nil)
 		return finish()
 	}
+	defer release()
 
 	store, kr := m.rt.env.Store, m.rt.env.Keyring
 	snaps, err := store.ListSnapshots(ctx)
@@ -1598,14 +1744,25 @@ func (m *GDriveBackupTask) gc(ctx context.Context, dep dependency.Dep) (task.Sta
 
 	referenced := make(map[string]struct{})
 	for _, s := range kept {
-		if s.KeyID != backup.KeyIDPlain && s.KeyID != kr.ID() {
+		// 每份快照按它自己的格式读取：明文快照不解密，blob 名称也按明文规则（sha256）计算
+		skr, err := backup.KeyringForSnapshot(s.KeyID, kr)
+		if errors.Is(err, backup.ErrSnapshotForeignKey) {
 			m.l.Warning("Snapshot %q was encrypted with another key, skip cleaning up blobs until it expires.", s.Name)
 			m.event(gdriveEventWarning, "gc_skipped_foreign_key", map[string]any{"snapshot": s.Name})
 			return finish()
 		}
-		err := store.ScanManifest(ctx, kr, s.ID, nil, func(e *backup.ManifestEntry) error {
+		if err != nil {
+			return task.StatusError, err
+		}
+		err = store.ScanManifest(ctx, skr, s.ID, nil, func(e *backup.ManifestEntry) error {
 			if e.Blob != "" {
 				referenced[e.Blob] = struct{}{}
+			}
+			// 同时保留按快照自己的密钥由 sha256 算出的名称，条目里的 blob 字段与之不符时也不误删
+			if e.Sha256 != "" && e.Sha256 != emptySha256 {
+				if sum, err := hex.DecodeString(e.Sha256); err == nil {
+					referenced[skr.BlobName(sum)] = struct{}{}
+				}
 			}
 			return nil
 		})

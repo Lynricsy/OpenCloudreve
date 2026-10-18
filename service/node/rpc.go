@@ -23,12 +23,23 @@ type (
 	}
 )
 
-// Get 获取主机Oauth策略的AccessToken
+// Get 获取主机Oauth策略的AccessToken。带 stale（被拒绝令牌的 credmanager.TokenDigest）时先强制刷新。
 func (s *OauthCredentialService) Get(c *gin.Context) (*credmanager.CredentialResponse, error) {
 	dep := dependency.FromContext(c)
+	if err := checkCredentialScope(c, dep, s.ID); err != nil {
+		return nil, err
+	}
 	credManager := dep.CredManager()
 
-	cred, err := credManager.Obtain(c, s.ID)
+	var (
+		cred credmanager.Credential
+		err  error
+	)
+	if stale := c.Query("stale"); stale != "" {
+		cred, err = credManager.ForceRefresh(c, s.ID, stale)
+	} else {
+		cred, err = credManager.Obtain(c, s.ID)
+	}
 	if cred == nil || err != nil {
 		return nil, serializer.NewError(serializer.CodeNotFound, "Credential not found", err)
 	}

@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -52,9 +53,13 @@ type (
 		SnapshotID   string              `json:"snapshot_id"`
 		SnapshotName string              `json:"snapshot_name,omitempty"`
 		Items        []GDriveRestoreItem `json:"items"`
-		// TargetUID 为 0 时恢复到各自原所有者
+		// TargetUID 为 0 时恢复到各自原所有者（要求该 uid 当前用户的邮箱与快照记录一致）
 		TargetUID int    `json:"target_uid,omitempty"`
 		TargetDir string `json:"target_dir"`
+		// KeepPath 为 true 时每个条目按快照中的完整原始路径恢复到目标用户“我的文件”下，忽略 TargetDir
+		KeepPath bool `json:"keep_path,omitempty"`
+		// KeyID 规划时记录的快照密钥标识，恢复阶段据此选择读取 blob 的 Keyring
+		KeyID string `json:"key_id,omitempty"`
 
 		Phase    string   `json:"phase,omitempty"`
 		TempDir  string   `json:"temp_dir,omitempty"`
@@ -76,6 +81,7 @@ type (
 
 	gdriveRestoreRuntime struct {
 		env   *backup.Env
+		kr    *backup.Keyring // 快照对应的 Keyring（明文快照为 nil），由 restore 每次按 KeyID 设置
 		blobs map[string]string
 		users map[int]*ent.User
 	}
@@ -94,13 +100,15 @@ func init() {
 	queue.RegisterResumableTaskFactory(queue.GDriveRestoreTaskType, NewGDriveRestoreTaskFromModel)
 }
 
-// NewGDriveRestoreTask 创建恢复任务。targetDir 为目标用户“我的文件”下的目录。
-func NewGDriveRestoreTask(ctx context.Context, snapshotID string, items []GDriveRestoreItem, targetUID int, targetDir string) (queue.Task, error) {
+// NewGDriveRestoreTask 创建恢复任务。targetDir 为目标用户“我的文件”下的目录；keepPath 为 true 时忽略 targetDir，
+// 按快照中的完整原始路径恢复。
+func NewGDriveRestoreTask(ctx context.Context, snapshotID string, items []GDriveRestoreItem, targetUID int, targetDir string, keepPath bool) (queue.Task, error) {
 	state := &GDriveRestoreTaskState{
 		SnapshotID: snapshotID,
 		Items:      items,
 		TargetUID:  targetUID,
 		TargetDir:  targetDir,
+		KeepPath:   keepPath,
 	}
 	stateBytes, err := json.Marshal(state)
 	if err != nil {
@@ -222,6 +230,122 @@ func restoreRelPath(entryPath, selected string) (string, bool) {
 	return strings.TrimPrefix(entryPath, parent), true
 }
 
+// validateRestoreEntry 校验清单条目：快照来自 Drive，内容可能被改写，不能直接信任。
+func validateRestoreEntry(e *backup.ManifestEntry) error {
+	// path.Clean 后不变的绝对路径不会再含有空段、. 或 .. 段
+	if e.Path == "/" || !strings.HasPrefix(e.Path, "/") || path.Clean(e.Path) != e.Path {
+		return fmt.Errorf("invalid path %q in snapshot", e.Path)
+	}
+	if len(e.Sha256) != sha256.Size*2 {
+		return fmt.Errorf("invalid checksum %q in snapshot", e.Sha256)
+	}
+	if _, err := hex.DecodeString(e.Sha256); err != nil {
+		return fmt.Errorf("invalid checksum %q in snapshot", e.Sha256)
+	}
+	if e.Size < 0 {
+		return fmt.Errorf("invalid size %d in snapshot", e.Size)
+	}
+	return nil
+}
+
+// restoreDest 把相对路径拼到目标目录下，并确认结果仍位于目标目录内。
+func restoreDest(base, rel string) (string, error) {
+	base = path.Clean("/" + base)
+	dest := path.Join(base, rel)
+	prefix := base
+	if prefix != "/" {
+		prefix += "/"
+	}
+	if dest == base || !strings.HasPrefix(dest, prefix) {
+		return "", fmt.Errorf("restore destination %q is outside target folder %q", dest, base)
+	}
+	return dest, nil
+}
+
+// planEntry 按选中项筛选条目并计算目标路径。条目不属于任何选中项时返回 (nil, nil)；
+// 条目不合法或目标越界时返回错误，由调用方计为失败。
+func (m *GDriveRestoreTask) planEntry(e *backup.ManifestEntry) (*gdriveRestorePlanLine, error) {
+	for _, item := range m.state.Items {
+		if item.UID != e.OwnerID {
+			continue
+		}
+		rel, ok := restoreRelPath(e.Path, item.Path)
+		if !ok {
+			continue
+		}
+		if err := validateRestoreEntry(e); err != nil {
+			return nil, err
+		}
+		base := m.state.TargetDir
+		if m.state.KeepPath {
+			// 原位置恢复：保留完整原始路径
+			base, rel = "/", e.Path
+		}
+		dest, err := restoreDest(base, rel)
+		if err != nil {
+			return nil, err
+		}
+		uid := e.OwnerID
+		if m.state.TargetUID > 0 {
+			uid = m.state.TargetUID
+		}
+		return &gdriveRestorePlanLine{UID: uid, Dest: dest, Entry: *e}, nil
+	}
+	return nil, nil
+}
+
+// gdriveRestorePlanResult 规划结果：写入计划文件的条目数，以及在规划阶段就被拒绝的条目。
+type gdriveRestorePlanResult struct {
+	snap   *backup.Snapshot
+	total  int
+	failed int
+	errors []string
+}
+
+// writePlan 找到快照，用快照对应的 Keyring 扫描清单，把选中的条目逐行写入 w。kr 为当前设置的 Keyring。
+func (m *GDriveRestoreTask) writePlan(ctx context.Context, store *backup.Store, kr *backup.Keyring, w io.Writer) (*gdriveRestorePlanResult, error) {
+	snaps, err := store.ListSnapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	idx := slices.IndexFunc(snaps, func(s backup.Snapshot) bool { return s.ID == m.state.SnapshotID })
+	if idx < 0 {
+		return nil, fmt.Errorf("snapshot not found (%w)", queue.CriticalErr)
+	}
+	res := &gdriveRestorePlanResult{snap: &snaps[idx]}
+	snapKr, err := backup.KeyringForSnapshot(res.snap.KeyID, kr)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot %q (key %s): %w (%w)", res.snap.Name, res.snap.KeyID, err, queue.CriticalErr)
+	}
+
+	err = store.ScanManifest(ctx, snapKr, res.snap.ID, nil, func(e *backup.ManifestEntry) error {
+		line, err := m.planEntry(e)
+		if err != nil {
+			res.failed++
+			if len(res.errors) < gdriveMaxErrors {
+				res.errors = append(res.errors, fmt.Sprintf("%s: %s", e.Path, err))
+			}
+			return nil
+		}
+		if line == nil {
+			return nil
+		}
+		raw, err := backup.EncodeLine(line)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(raw); err != nil {
+			return err
+		}
+		res.total++
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 // plan 读取快照，按选中项筛选并计算目标路径，写入本地计划文件。
 func (m *GDriveRestoreTask) plan(ctx context.Context, dep dependency.Dep) (task.Status, error) {
 	// 规划失败重试时状态已写回，事件不重复记录
@@ -231,28 +355,11 @@ func (m *GDriveRestoreTask) plan(ctx context.Context, dep dependency.Dep) (task.
 			"items":       len(m.state.Items),
 			"target_uid":  m.state.TargetUID,
 			"target_dir":  m.state.TargetDir,
+			"keep_path":   m.state.KeepPath,
 		})
 	}
 	if err := m.ensureEnv(ctx, dep); err != nil {
 		return task.StatusError, err
-	}
-	store, kr := m.rt.env.Store, m.rt.env.Keyring
-
-	snaps, err := store.ListSnapshots(ctx)
-	if err != nil {
-		return task.StatusError, err
-	}
-	var snap *backup.Snapshot
-	for i := range snaps {
-		if snaps[i].ID == m.state.SnapshotID {
-			snap = &snaps[i]
-		}
-	}
-	if snap == nil {
-		return task.StatusError, fmt.Errorf("snapshot not found (%w)", queue.CriticalErr)
-	}
-	if snap.KeyID != backup.KeyIDPlain && snap.KeyID != kr.ID() {
-		return task.StatusError, fmt.Errorf("snapshot %q was encrypted with another key %s (%w)", snap.Name, snap.KeyID, queue.CriticalErr)
 	}
 
 	tempDir := util.DataPath(path.Join(dep.SettingProvider().TempPath(ctx), TaskTempPath, "gdrive_restore_"+strconv.Itoa(m.ID())))
@@ -267,32 +374,7 @@ func (m *GDriveRestoreTask) plan(ctx context.Context, dep dependency.Dep) (task.
 		return task.StatusError, fmt.Errorf("failed to create plan file: %w", err)
 	}
 	w := bufio.NewWriter(f)
-	total := 0
-	err = store.ScanManifest(ctx, kr, snap.ID, nil, func(e *backup.ManifestEntry) error {
-		for _, item := range m.state.Items {
-			if item.UID != e.OwnerID {
-				continue
-			}
-			rel, ok := restoreRelPath(e.Path, item.Path)
-			if !ok {
-				continue
-			}
-			uid := e.OwnerID
-			if m.state.TargetUID > 0 {
-				uid = m.state.TargetUID
-			}
-			line, err := backup.EncodeLine(&gdriveRestorePlanLine{UID: uid, Dest: path.Join("/", m.state.TargetDir, rel), Entry: *e})
-			if err != nil {
-				return err
-			}
-			if _, err := w.Write(line); err != nil {
-				return err
-			}
-			total++
-			break
-		}
-		return nil
-	})
+	res, err := m.writePlan(ctx, m.rt.env.Store, m.rt.env.Keyring, w)
 	if err == nil {
 		err = w.Flush()
 	}
@@ -303,30 +385,54 @@ func (m *GDriveRestoreTask) plan(ctx context.Context, dep dependency.Dep) (task.
 		return task.StatusError, fmt.Errorf("failed to plan restore: %w", err)
 	}
 
-	m.l.Info("Restoring %d files from snapshot %q", total, snap.Name)
+	snap := res.snap
+	m.l.Info("Restoring %d files from snapshot %q (%d invalid entries rejected)", res.total, snap.Name, res.failed)
 	m.Lock()
 	m.state.SnapshotName = snap.Name
+	m.state.KeyID = snap.KeyID
 	m.state.TempDir = tempDir
-	m.state.Total = total
+	// 规划阶段拒绝的条目直接计为已处理的失败项
+	m.state.Total = res.total + res.failed
+	m.state.Done = res.failed
+	m.state.Failed = res.failed
+	m.state.Errors = res.errors
 	m.state.Phase = GDriveRestorePhaseRestore
-	m.state.add(gdriveEventInfo, "restore_planned", map[string]any{"snapshot": snap.Name, "files": total})
+	m.state.add(gdriveEventInfo, "restore_planned", map[string]any{"snapshot": snap.Name, "files": res.total})
 	m.Unlock()
 	return task.StatusProcessing, nil
+}
+
+// prepareRestore 按规划时记录的快照密钥选择 Keyring，并缓存 Drive 上的 blob 名称到 ID 的映射。
+func (m *GDriveRestoreTask) prepareRestore(ctx context.Context) error {
+	keyID := m.state.KeyID
+	if keyID == "" {
+		// 升级前规划的任务没有记录 key_id，按当时的行为使用当前密钥
+		keyID = m.rt.env.Keyring.ID()
+	}
+	kr, err := backup.KeyringForSnapshot(keyID, m.rt.env.Keyring)
+	if err != nil {
+		return fmt.Errorf("snapshot %q (key %s): %w (%w)", m.state.SnapshotName, keyID, err, queue.CriticalErr)
+	}
+	m.rt.kr = kr
+	if m.rt.blobs == nil {
+		list, err := m.rt.env.Store.ListBlobs(ctx)
+		if err != nil {
+			return err
+		}
+		m.rt.blobs = make(map[string]string, len(list))
+		for name, items := range list {
+			m.rt.blobs[name] = items[0].ID
+		}
+	}
+	return nil
 }
 
 func (m *GDriveRestoreTask) restore(ctx context.Context, dep dependency.Dep) (task.Status, error) {
 	if err := m.ensureEnv(ctx, dep); err != nil {
 		return task.StatusError, err
 	}
-	if m.rt.blobs == nil {
-		list, err := m.rt.env.Store.ListBlobs(ctx)
-		if err != nil {
-			return task.StatusError, err
-		}
-		m.rt.blobs = make(map[string]string, len(list))
-		for name, items := range list {
-			m.rt.blobs[name] = items[0].ID
-		}
+	if err := m.prepareRestore(ctx); err != nil {
+		return task.StatusError, err
 	}
 
 	f, err := os.Open(filepath.Join(m.state.TempDir, gdriveRestorePlanFile))
@@ -403,11 +509,28 @@ func (m *GDriveRestoreTask) targetUser(ctx context.Context, dep dependency.Dep, 
 	return u, nil
 }
 
+// checkOriginalOwner 恢复到原所有者时确认该 uid 现在仍属于快照记录的用户：uid 可能已被重新分配给其他人。
+func checkOriginalOwner(u *ent.User, e *backup.ManifestEntry) error {
+	if e.Owner == "" {
+		return fmt.Errorf("user %d is now %q but the snapshot does not record the owner email, choose a target user explicitly", u.ID, u.Email)
+	}
+	if u.Email != e.Owner {
+		return fmt.Errorf("user %d is now %q but the snapshot owner is %q, choose a target user explicitly", u.ID, u.Email, e.Owner)
+	}
+	return nil
+}
+
 // restoreOne 恢复一个文件。返回 false 且无错误表示目标已存在而跳过。
 func (m *GDriveRestoreTask) restoreOne(ctx context.Context, dep dependency.Dep, managers map[int]manager.FileManager, line *gdriveRestorePlanLine) (bool, error) {
 	u, err := m.targetUser(ctx, dep, line.UID)
 	if err != nil {
 		return false, err
+	}
+	e := line.Entry
+	if m.state.TargetUID == 0 {
+		if err := checkOriginalOwner(u, &e); err != nil {
+			return false, err
+		}
 	}
 	fm, ok := managers[u.ID]
 	if !ok {
@@ -425,7 +548,6 @@ func (m *GDriveRestoreTask) restoreOne(ctx context.Context, dep dependency.Dep, 
 		return false, nil
 	}
 
-	e := line.Entry
 	if e.Blob == "" {
 		if e.Size != 0 {
 			return false, errors.New("missing blob reference")
@@ -436,17 +558,9 @@ func (m *GDriveRestoreTask) restoreOne(ctx context.Context, dep dependency.Dep, 
 		return true, nil
 	}
 
-	blobID, ok := m.rt.blobs[e.Blob]
-	if !ok {
-		return false, errors.New("backup data not found on google drive")
-	}
-	sum, err := hex.DecodeString(e.Sha256)
+	src, err := m.openEntry(ctx, &e)
 	if err != nil {
-		return false, fmt.Errorf("invalid checksum in snapshot: %w", err)
-	}
-	src, err := m.rt.env.Store.OpenBlob(ctx, m.rt.env.Keyring, blobID)
-	if err != nil {
-		return false, fmt.Errorf("failed to download backup data: %w", err)
+		return false, err
 	}
 	defer src.Close()
 
@@ -457,7 +571,7 @@ func (m *GDriveRestoreTask) restoreOne(ctx context.Context, dep dependency.Dep, 
 			Size:         e.Size,
 			LastModified: &modified,
 		},
-		File: io.NopCloser(&verifyingReader{r: src, h: sha256.New(), want: sum, size: e.Size}),
+		File: io.NopCloser(src),
 	}, fs.WithNoEntityType())
 	if err != nil {
 		var appErr serializer.AppError
@@ -469,28 +583,107 @@ func (m *GDriveRestoreTask) restoreOne(ctx context.Context, dep dependency.Dep, 
 	return true, nil
 }
 
-// verifyingReader 读到末尾时校验长度与 sha256，不一致则返回错误使上传失败（不会留下错误内容的文件）。
+// openEntry 用快照对应的 Keyring 计算 blob 名称并打开 blob，返回校验长度与 sha256 的 Reader。
+func (m *GDriveRestoreTask) openEntry(ctx context.Context, e *backup.ManifestEntry) (io.ReadCloser, error) {
+	sum, err := hex.DecodeString(e.Sha256)
+	if err != nil {
+		return nil, fmt.Errorf("invalid checksum in snapshot: %w", err)
+	}
+	name := m.rt.kr.BlobName(sum)
+	if e.Blob != name {
+		return nil, errors.New("blob reference in snapshot does not match its checksum")
+	}
+	blobID, ok := m.rt.blobs[name]
+	if !ok {
+		return nil, errors.New("backup data not found on google drive")
+	}
+	src, err := m.rt.env.Store.OpenBlob(ctx, m.rt.kr, blobID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download backup data: %w", err)
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{&verifyingReader{r: src, h: sha256.New(), want: sum, size: e.Size}, src}, nil
+}
+
+// verifyingReader 校验长度与 sha256，不一致则返回错误使上传失败（不会留下错误内容的文件）。
+//
+// 驱动常按 size 用 io.LimitReader 读取（分块上传、S3 等），读满后不会再调用 Read，因此不能等消费方读到 EOF：
+// 读满 size 字节的那次 Read 主动向下层确认已到末尾并校验哈希。校验失败时扣下这最后一段数据、只返回错误——
+// 带重试缓冲的分块上传在最后一块完整读到时会改从缓冲文件重试，若把数据交出去，重试就会绕过校验。
 type verifyingReader struct {
 	r    io.Reader
 	h    hash.Hash
 	want []byte
 	size int64
 	n    int64
+	// err 校验结束后的结果，之后的 Read 都返回它：通过为 io.EOF，失败为对应错误
+	err error
 }
 
 func (v *verifyingReader) Read(p []byte) (int, error) {
-	n, err := v.r.Read(p)
-	v.h.Write(p[:n])
-	v.n += int64(n)
-	if errors.Is(err, io.EOF) {
-		if v.n != v.size {
-			return n, fmt.Errorf("size mismatch: expected %d bytes, got %d bytes", v.size, v.n)
+	if v.err != nil {
+		return 0, v.err
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	// 不向下层多要数据：读满 size 的时刻必须落在本 Reader 能察觉的某次 Read 上
+	if rem := v.size - v.n; int64(len(p)) > rem {
+		p = p[:rem]
+	}
+	var (
+		n   int
+		err error
+	)
+	if len(p) > 0 {
+		n, err = v.r.Read(p)
+		v.h.Write(p[:n])
+		v.n += int64(n)
+	}
+	if v.n < v.size {
+		if errors.Is(err, io.EOF) {
+			v.err = fmt.Errorf("size mismatch: expected %d bytes, got %d bytes", v.size, v.n)
+			return 0, v.err
 		}
-		if string(v.h.Sum(nil)) != string(v.want) {
-			return n, errors.New("checksum mismatch")
+		return n, err
+	}
+
+	// 已读满 size 字节
+	switch {
+	case err == nil:
+		err = v.probeEOF()
+	case errors.Is(err, io.EOF):
+		err = nil
+	}
+	if err == nil && !bytes.Equal(v.h.Sum(nil), v.want) {
+		err = errors.New("checksum mismatch")
+	}
+	if err != nil {
+		v.err = err
+		return 0, err
+	}
+	v.err = io.EOF
+	return n, nil
+}
+
+// probeEOF 确认下层已经没有更多数据。
+func (v *verifyingReader) probeEOF() error {
+	var b [1]byte
+	for range 100 {
+		n, err := v.r.Read(b[:])
+		if n > 0 {
+			return fmt.Errorf("size mismatch: backup data is longer than %d bytes", v.size)
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
 		}
 	}
-	return n, err
+	return io.ErrNoProgress
 }
 
 func (m *GDriveRestoreTask) finish() (task.Status, error) {

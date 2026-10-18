@@ -2,7 +2,9 @@ package credmanager
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/gob"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,6 +29,9 @@ type (
 		// Upsert inserts or updates a credential in the manager
 		Upsert(ctx context.Context, cred ...Credential) error
 		RefreshAll(ctx context.Context)
+		// ForceRefresh 在服务端拒绝了摘要为 staleDigest（TokenDigest）的令牌后强制刷新并返回新凭证。
+		// 缓存中的凭证已不是该令牌且尚未过期时（其他调用方已经刷新过），直接返回缓存，不重复刷新。
+		ForceRefresh(ctx context.Context, key, staleDigest string) (Credential, error)
 	}
 
 	Credential interface {
@@ -61,6 +66,12 @@ type (
 var (
 	ErrNotFound = errors.New("credential not found")
 )
+
+// TokenDigest 令牌摘要，用于 ForceRefresh 指明被拒绝的令牌，避免在请求参数中传递令牌本身。
+func TokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
 
 func (m *credManager) Upsert(ctx context.Context, cred ...Credential) error {
 	m.mu.Lock()
@@ -116,6 +127,40 @@ func (m *credManager) Obtain(ctx context.Context, key string) (Credential, error
 		return nil, fmt.Errorf("failed to update credential in KV for key %q: %w", key, err)
 	}
 
+	return newCred, nil
+}
+
+func (m *credManager) ForceRefresh(ctx context.Context, key, staleDigest string) (Credential, error) {
+	m.mu.Lock()
+	lock, ok := m.locks[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		m.locks[key] = lock
+	}
+	m.mu.Unlock()
+
+	lock.Lock()
+	defer lock.Unlock()
+
+	itemRaw, ok := m.kv.Get(key)
+	if !ok {
+		return nil, fmt.Errorf("credential not found for key %q: %w", key, ErrNotFound)
+	}
+	item := itemRaw.(Credential)
+	if TokenDigest(item.String()) != staleDigest && item.Expiry().After(time.Now()) {
+		// 等锁期间已被其他调用方刷新
+		return item, nil
+	}
+
+	l := logging.FromContext(ctx)
+	l.Info("Force refreshing rejected credential for key %q...", key)
+	newCred, err := item.Refresh(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh credential for key %q: %w", key, err)
+	}
+	if err := m.kv.Set(key, newCred, 0); err != nil {
+		return nil, fmt.Errorf("failed to update credential in KV for key %q: %w", key, err)
+	}
 	return newCred, nil
 }
 
@@ -200,20 +245,37 @@ func (m *slaveCredManager) Upsert(ctx context.Context, cred ...Credential) error
 func (m *slaveCredManager) Obtain(ctx context.Context, key string) (Credential, error) {
 	itemRaw, ok := m.kv.Get(key)
 	if !ok {
-		return m.requestCredFromMaster(ctx, key)
+		return m.requestCredFromMaster(ctx, key, "")
 	}
 
 	return itemRaw.(Credential), nil
 }
 
+// ForceRefresh 从机：缓存仍是被拒绝的令牌时，要求主机强制刷新后再拉取。
+func (m *slaveCredManager) ForceRefresh(ctx context.Context, key, staleDigest string) (Credential, error) {
+	if itemRaw, ok := m.kv.Get(key); ok {
+		item := itemRaw.(Credential)
+		if TokenDigest(item.String()) != staleDigest && item.Expiry().After(time.Now()) {
+			return item, nil
+		}
+	}
+	return m.requestCredFromMaster(ctx, key, staleDigest)
+}
+
 // No op on slave node
 func (m *slaveCredManager) RefreshAll(ctx context.Context) {}
 
-func (m *slaveCredManager) requestCredFromMaster(ctx context.Context, key string) (Credential, error) {
+// requestCredFromMaster 向主机拉取凭证；staleDigest 非空时主机先强制刷新该令牌。
+func (m *slaveCredManager) requestCredFromMaster(ctx context.Context, key, staleDigest string) (Credential, error) {
 	l := logging.FromContext(ctx)
 	l.Info("SlaveCredManager: Requesting credential for key %q from master...", key)
 
 	requestDst := routes.MasterGetCredentialUrl(cluster.MasterSiteUrlFromContext(ctx), key)
+	if staleDigest != "" {
+		q := requestDst.Query()
+		q.Set("stale", staleDigest)
+		requestDst.RawQuery = q.Encode()
+	}
 	resp, err := m.client.Request(
 		http.MethodGet,
 		requestDst.String(),
