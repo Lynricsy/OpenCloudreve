@@ -37,6 +37,9 @@ type (
 		CreateTask(ctx context.Context, taskType string, state string) (int, error)
 		// GetTask returns the task summary of the task with the given id.
 		GetTask(ctx context.Context, id int, clearOnComplete bool) (*SlaveTaskSummary, error)
+		// GetOwnedTask 与 GetTask 相同，但从机只在任务私有状态中的 nonce 等于给定值时才返回或删除任务，
+		// 否则返回 CodeNotFound。用于从机重启后任务 ID 可能被其他任务复用的场景。
+		GetOwnedTask(ctx context.Context, id int, nonce string, clearOnComplete bool) (*SlaveTaskSummary, error)
 		// CleanupFolders cleans up the given folders on the node.
 		CleanupFolders(ctx context.Context, folders ...string) error
 		// AuthInstance returns the auth instance for the node.
@@ -284,9 +287,17 @@ func (n *slaveNode) CreateTask(ctx context.Context, taskType string, state strin
 }
 
 func (n *slaveNode) GetTask(ctx context.Context, id int, clearOnComplete bool) (*SlaveTaskSummary, error) {
+	return n.getTask(ctx, routes.SlaveGetTaskRoute(id, clearOnComplete))
+}
+
+func (n *slaveNode) GetOwnedTask(ctx context.Context, id int, nonce string, clearOnComplete bool) (*SlaveTaskSummary, error) {
+	return n.getTask(ctx, routes.SlaveGetOwnedTaskRoute(id, clearOnComplete, nonce))
+}
+
+func (n *slaveNode) getTask(ctx context.Context, route string) (*SlaveTaskSummary, error) {
 	resp, err := n.client.Request(
 		"GET",
-		routes.SlaveGetTaskRoute(id, clearOnComplete),
+		route,
 		nil,
 		request.WithContext(ctx),
 		request.WithLogger(logging.FromContext(ctx)),
@@ -363,6 +374,10 @@ func (b *nodeBase) AuthInstance() auth.Auth {
 }
 
 func (b *nodeBase) GetTask(ctx context.Context, id int, clearOnComplete bool) (*SlaveTaskSummary, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (b *nodeBase) GetOwnedTask(ctx context.Context, id int, nonce string, clearOnComplete bool) (*SlaveTaskSummary, error) {
 	return nil, errors.New("not implemented")
 }
 

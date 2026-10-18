@@ -15,6 +15,8 @@ const (
 	IsDownloadQuery             = "download"
 	IsThumbQuery                = "thumb"
 	SlaveClearTaskRegistryQuery = "deleteOnComplete"
+	// SlaveTaskNonceQuery 查询从机任务时携带的批次 nonce，从机核对一致后才返回或删除该任务
+	SlaveTaskNonceQuery = "nonce"
 )
 
 var (
@@ -222,6 +224,15 @@ func SlaveGetTaskRoute(id int, deleteOnComplete bool) string {
 		p += "?" + SlaveClearTaskRegistryQuery + "=true"
 	}
 	return p
+}
+
+// SlaveGetOwnedTaskRoute 与 SlaveGetTaskRoute 相同，但要求从机核对任务私有状态中的 nonce。
+func SlaveGetOwnedTaskRoute(id int, deleteOnComplete bool, nonce string) string {
+	q := url.Values{SlaveTaskNonceQuery: {nonce}}
+	if deleteOnComplete {
+		q.Set(SlaveClearTaskRegistryQuery, "true")
+	}
+	return constants.APIPrefixSlave + "/task/" + strconv.Itoa(id) + "?" + q.Encode()
 }
 
 func SlavePingRoute(base *url.URL) string {

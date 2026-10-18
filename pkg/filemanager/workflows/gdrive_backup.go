@@ -1485,7 +1485,8 @@ func (m *GDriveBackupTask) pollBatch(ctx context.Context, dep dependency.Dep, np
 	node, err := pickNode(ctx, np, nodeID)
 	var summary *cluster.SlaveTaskSummary
 	if err == nil {
-		summary, err = node.GetTask(ctx, b.SlaveTaskID, true)
+		// 带上 nonce：从机核对一致后才返回或删除任务，ID 被其他任务复用时不会误删别人的结果
+		summary, err = node.GetOwnedTask(ctx, b.SlaveTaskID, b.Nonce, true)
 	}
 	if err != nil {
 		var appErr serializer.AppError
@@ -1503,7 +1504,8 @@ func (m *GDriveBackupTask) pollBatch(ctx context.Context, dep dependency.Dep, np
 		return m.batchLost(ctx, dep, nodeID, node, n, fmt.Errorf("slave task lost: %w", err))
 	}
 
-	// 从机重启后任务 ID 从头分配，同一 ID 上可能是另一个任务：nonce 对不上同样按任务丢失处理
+	// 从机重启后任务 ID 从头分配，同一 ID 上可能是另一个任务：nonce 对不上同样按任务丢失处理。
+	// 新版从机已在服务端核对过，这里再核对一次，兼容会忽略 nonce 参数的旧版从机。
 	var tag struct {
 		Nonce string `json:"nonce"`
 	}

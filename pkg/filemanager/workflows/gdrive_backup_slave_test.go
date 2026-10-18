@@ -74,6 +74,11 @@ func (n *slaveTestNode) GetTask(ctx context.Context, id int, clearOnComplete boo
 	return n.respond(n.payloads[len(n.payloads)-1]), nil
 }
 
+// GetOwnedTask 模拟忽略 nonce 参数的旧版从机，由主机自己核对 nonce
+func (n *slaveTestNode) GetOwnedTask(ctx context.Context, id int, nonce string, clearOnComplete bool) (*cluster.SlaveTaskSummary, error) {
+	return n.GetTask(ctx, id, clearOnComplete)
+}
+
 func (n *slaveTestNode) lastState(t *testing.T) *SlaveGDriveBackupState {
 	t.Helper()
 	require.NotEmpty(t, n.payloads)

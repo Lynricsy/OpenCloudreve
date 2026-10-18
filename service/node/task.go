@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -61,25 +62,39 @@ type (
 )
 
 func (s *GetSlaveTaskService) Get(c *gin.Context) (*cluster.SlaveTaskSummary, error) {
-	dep := dependency.FromContext(c)
-	registry := dep.TaskRegistry()
+	_, clearOnComplete := c.GetQuery(routes.SlaveClearTaskRegistryQuery)
+	nonce, checkNonce := c.GetQuery(routes.SlaveTaskNonceQuery)
+	return getSlaveTask(c, dependency.FromContext(c).TaskRegistry(), s.ID, clearOnComplete, nonce, checkNonce)
+}
 
-	t, ok := registry.Get(s.ID)
+// getSlaveTask 读取注册表中的任务，按需删除已结束的注册项。
+// checkNonce 为 true 时，任务私有状态中的 nonce 必须等于调用方给出的值，否则按任务不存在处理，也不删除注册项：
+// 从机重启后任务 ID 从头分配，同一 ID 上可能是别人的任务，不能读取或删掉它的结果。
+func getSlaveTask(ctx context.Context, registry queue.TaskRegistry, id int, clearOnComplete bool, nonce string, checkNonce bool) (*cluster.SlaveTaskSummary, error) {
+	t, ok := registry.Get(id)
 	if !ok {
 		return nil, serializer.NewError(serializer.CodeNotFound, "task not found", nil)
 	}
+	state := t.State()
+	if checkNonce {
+		var tag struct {
+			Nonce string `json:"nonce"`
+		}
+		if nonce == "" || json.Unmarshal([]byte(state), &tag) != nil || tag.Nonce != nonce {
+			return nil, serializer.NewError(serializer.CodeNotFound, "task not found", nil)
+		}
+	}
 	status := t.Status()
-	_, clearOnComplete := c.GetQuery(routes.SlaveClearTaskRegistryQuery)
 	if clearOnComplete && status == task.StatusCompleted ||
 		status == task.StatusError ||
 		status == task.StatusCanceled {
-		registry.Delete(s.ID)
+		registry.Delete(id)
 	}
 
 	res := &cluster.SlaveTaskSummary{
 		Status:       status,
-		PrivateState: t.State(),
-		Progress:     t.Progress(c),
+		PrivateState: state,
+		Progress:     t.Progress(ctx),
 	}
 	err := t.Error()
 	if err != nil {
