@@ -79,6 +79,7 @@ var (
 		{Name: "reference_count", Type: field.TypeInt, Default: 1},
 		{Name: "upload_session_id", Type: field.TypeUUID, Nullable: true},
 		{Name: "recycle_options", Type: field.TypeJSON, Nullable: true},
+		{Name: "sha256", Type: field.TypeString, Nullable: true, Size: 64},
 		{Name: "storage_policy_entities", Type: field.TypeInt},
 		{Name: "created_by", Type: field.TypeInt, Nullable: true},
 	}
@@ -90,15 +91,22 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "entities_storage_policies_entities",
-				Columns:    []*schema.Column{EntitiesColumns[10]},
+				Columns:    []*schema.Column{EntitiesColumns[11]},
 				RefColumns: []*schema.Column{StoragePoliciesColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "entities_users_entities",
-				Columns:    []*schema.Column{EntitiesColumns[11]},
+				Columns:    []*schema.Column{EntitiesColumns[12]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.SetNull,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "entity_sha256",
+				Unique:  false,
+				Columns: []*schema.Column{EntitiesColumns[10]},
 			},
 		},
 	}

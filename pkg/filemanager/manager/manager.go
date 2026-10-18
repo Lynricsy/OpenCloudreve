@@ -112,6 +112,7 @@ type (
 		FsManagement
 		ShareManagement
 		Archiver
+		EntityHashManagement
 
 		// Recycle reset current FileManager object and put back to resource pool
 		Recycle()

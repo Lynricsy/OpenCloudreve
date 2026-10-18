@@ -1730,6 +1730,7 @@ type EntityMutation struct {
 	addreference_count    *int
 	upload_session_id     *uuid.UUID
 	props                 **types.EntityProps
+	sha256                *string
 	clearedFields         map[string]struct{}
 	file                  map[int]struct{}
 	removedfile           map[int]struct{}
@@ -2349,6 +2350,55 @@ func (m *EntityMutation) ResetProps() {
 	delete(m.clearedFields, entity.FieldProps)
 }
 
+// SetSha256 sets the "sha256" field.
+func (m *EntityMutation) SetSha256(s string) {
+	m.sha256 = &s
+}
+
+// Sha256 returns the value of the "sha256" field in the mutation.
+func (m *EntityMutation) Sha256() (r string, exists bool) {
+	v := m.sha256
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSha256 returns the old "sha256" field's value of the Entity entity.
+// If the Entity object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *EntityMutation) OldSha256(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSha256 is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSha256 requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSha256: %w", err)
+	}
+	return oldValue.Sha256, nil
+}
+
+// ClearSha256 clears the value of the "sha256" field.
+func (m *EntityMutation) ClearSha256() {
+	m.sha256 = nil
+	m.clearedFields[entity.FieldSha256] = struct{}{}
+}
+
+// Sha256Cleared returns if the "sha256" field was cleared in this mutation.
+func (m *EntityMutation) Sha256Cleared() bool {
+	_, ok := m.clearedFields[entity.FieldSha256]
+	return ok
+}
+
+// ResetSha256 resets all changes to the "sha256" field.
+func (m *EntityMutation) ResetSha256() {
+	m.sha256 = nil
+	delete(m.clearedFields, entity.FieldSha256)
+}
+
 // AddFileIDs adds the "file" edge to the File entity by ids.
 func (m *EntityMutation) AddFileIDs(ids ...int) {
 	if m.file == nil {
@@ -2517,7 +2567,7 @@ func (m *EntityMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *EntityMutation) Fields() []string {
-	fields := make([]string, 0, 11)
+	fields := make([]string, 0, 12)
 	if m.created_at != nil {
 		fields = append(fields, entity.FieldCreatedAt)
 	}
@@ -2551,6 +2601,9 @@ func (m *EntityMutation) Fields() []string {
 	if m.props != nil {
 		fields = append(fields, entity.FieldProps)
 	}
+	if m.sha256 != nil {
+		fields = append(fields, entity.FieldSha256)
+	}
 	return fields
 }
 
@@ -2581,6 +2634,8 @@ func (m *EntityMutation) Field(name string) (ent.Value, bool) {
 		return m.UploadSessionID()
 	case entity.FieldProps:
 		return m.Props()
+	case entity.FieldSha256:
+		return m.Sha256()
 	}
 	return nil, false
 }
@@ -2612,6 +2667,8 @@ func (m *EntityMutation) OldField(ctx context.Context, name string) (ent.Value, 
 		return m.OldUploadSessionID(ctx)
 	case entity.FieldProps:
 		return m.OldProps(ctx)
+	case entity.FieldSha256:
+		return m.OldSha256(ctx)
 	}
 	return nil, fmt.Errorf("unknown Entity field %s", name)
 }
@@ -2698,6 +2755,13 @@ func (m *EntityMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetProps(v)
 		return nil
+	case entity.FieldSha256:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSha256(v)
+		return nil
 	}
 	return fmt.Errorf("unknown Entity field %s", name)
 }
@@ -2779,6 +2843,9 @@ func (m *EntityMutation) ClearedFields() []string {
 	if m.FieldCleared(entity.FieldProps) {
 		fields = append(fields, entity.FieldProps)
 	}
+	if m.FieldCleared(entity.FieldSha256) {
+		fields = append(fields, entity.FieldSha256)
+	}
 	return fields
 }
 
@@ -2804,6 +2871,9 @@ func (m *EntityMutation) ClearField(name string) error {
 		return nil
 	case entity.FieldProps:
 		m.ClearProps()
+		return nil
+	case entity.FieldSha256:
+		m.ClearSha256()
 		return nil
 	}
 	return fmt.Errorf("unknown Entity nullable field %s", name)
@@ -2845,6 +2915,9 @@ func (m *EntityMutation) ResetField(name string) error {
 		return nil
 	case entity.FieldProps:
 		m.ResetProps()
+		return nil
+	case entity.FieldSha256:
+		m.ResetSha256()
 		return nil
 	}
 	return fmt.Errorf("unknown Entity field %s", name)

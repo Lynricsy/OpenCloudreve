@@ -176,6 +176,32 @@ func FileURL(c *gin.Context) {
 	}
 }
 
+// FileHash 批量查询文件当前版本的 SHA-256，可选为尚未计算的文件创建计算任务
+func FileHash(c *gin.Context) {
+	service := ParametersFromContext[*explorer.FileHashService](c, explorer.FileHashParameterCtx{})
+	resp, err := service.Get(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	c.JSON(200, serializer.Response{Data: resp})
+}
+
+// SearchFileHash 在当前用户的文件中按 SHA-256 查找
+func SearchFileHash(c *gin.Context) {
+	service := ParametersFromContext[*explorer.FileHashSearchService](c, explorer.FileHashSearchParameterCtx{})
+	resp, err := service.Search(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	c.JSON(200, serializer.Response{Data: resp})
+}
+
 // ServeEntity download entity content
 func ServeEntity(c *gin.Context) {
 	service := ParametersFromContext[*explorer.EntityDownloadService](c, explorer.EntityDownloadParameterCtx{})

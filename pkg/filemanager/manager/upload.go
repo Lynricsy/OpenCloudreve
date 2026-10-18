@@ -228,6 +228,25 @@ func (m *manager) Upload(ctx context.Context, req *fs.UploadRequest, policy *ent
 		return err
 	}
 
+	// 流式哈希须包在加密之前，计入的是明文
+	putOK := false
+	if attempt := m.beginStreamHash(session, req, policy); attempt != nil {
+		req.File = attempt
+		if req.Seeker != nil {
+			req.Seeker = attempt
+		}
+		defer func() {
+			attempt.finish(putOK)
+			// 还原调用方的读取器，调用方会用它核对实际读取的字节数
+			if req.File == attempt {
+				req.File = attempt.file
+			}
+			if req.Seeker == attempt {
+				req.Seeker = attempt.seeker
+			}
+		}()
+	}
+
 	if session != nil && session.EncryptMetadata != nil && !req.Props.ClientSideEncrypted {
 		cryptor, err := m.dep.EncryptorFactory(ctx)(session.EncryptMetadata.Algorithm)
 		if err != nil {
@@ -254,6 +273,7 @@ func (m *manager) Upload(ctx context.Context, req *fs.UploadRequest, policy *ent
 		return serializer.NewError(serializer.CodeIOFailed, "Failed to upload file", err)
 	}
 
+	putOK = true
 	return nil
 }
 
@@ -353,6 +373,7 @@ func (m *manager) CancelUploadSession(ctx context.Context, path *fs.URI, session
 
 		m.kv.Delete(UploadSessionCachePrefix, session.Props.UploadSessionID)
 		releaseUploadSessionLock(session.Props.UploadSessionID)
+		dropStreamHash(session.Props.UploadSessionID)
 	}
 
 	// Delete stale entities
@@ -462,6 +483,7 @@ func (m *manager) OnUploadFailed(ctx context.Context, session *fs.UploadSession)
 	ctx = context.WithoutCancel(ctx)
 	if session != nil && session.Props != nil {
 		defer releaseUploadSessionLock(session.Props.UploadSessionID)
+		defer dropStreamHash(session.Props.UploadSessionID)
 	}
 	if !m.stateless {
 		if session.LockToken != "" {
@@ -536,6 +558,8 @@ func (m *manager) onNewEntityUploaded(ctx context.Context, session *fs.UploadSes
 		m.mediaMetaForNewEntity(ctx, session, d)
 		// Submit full text index task for new entity
 		m.fullTextIndexForNewEntity(ctx, session, owner)
+		// Write streamed sha256 or queue hash task for new entity
+		m.hashForNewEntity(ctx, session)
 	}
 }
 

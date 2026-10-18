@@ -272,6 +272,10 @@ type FileResponse struct {
 	Capability    *boolset.BooleanSet `json:"capability,omitempty"`
 	Owned         bool                `json:"owned,omitempty"`
 	PrimaryEntity string              `json:"primary_entity,omitempty"`
+	// Sha256/HashStatus/HashReason 仅在列目录时请求了 hash=true 才返回，对应当前版本实体
+	Sha256     string             `json:"sha256,omitempty"`
+	HashStatus manager.HashStatus `json:"hash_status,omitempty"`
+	HashReason string             `json:"hash_reason,omitempty"`
 
 	FolderSummary *fs.FolderSummary `json:"folder_summary,omitempty"`
 	ExtendedInfo  *ExtendedInfo     `json:"extended_info,omitempty"`
@@ -321,6 +325,7 @@ type Entity struct {
 	StoragePolicy *StoragePolicy   `json:"storage_policy,omitempty"`
 	CreatedBy     *user.User       `json:"created_by,omitempty"`
 	EncryptedWith types.Cipher     `json:"encrypted_with,omitempty"`
+	Sha256        string           `json:"sha256,omitempty"`
 }
 
 type Share struct {
@@ -494,6 +499,11 @@ func BuildEntity(ctx context.Context, extendedInfo *fs.FileExtendedInfo, e fs.En
 		encryptedWith = e.Props().EncryptMetadata.Algorithm
 	}
 
+	sha := ""
+	if m := e.Model(); m != nil && m.Sha256 != nil {
+		sha = *m.Sha256
+	}
+
 	return Entity{
 		ID:            hashid.EncodeEntityID(hasher, e.ID()),
 		Type:          e.Type(),
@@ -502,6 +512,7 @@ func BuildEntity(ctx context.Context, extendedInfo *fs.FileExtendedInfo, e fs.En
 		Size:          e.Size(),
 		CreatedBy:     u,
 		EncryptedWith: encryptedWith,
+		Sha256:        sha,
 	}
 }
 

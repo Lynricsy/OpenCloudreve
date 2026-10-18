@@ -246,6 +246,13 @@ type FileClient interface {
 	UpdateModifiedAt(ctx context.Context, file *ent.File, modifiedAt time.Time) error
 	// DeleteAllMetadataByName deletes all metadata by a given name
 	DeleteAllMetadataByName(ctx context.Context, name string) error
+	// SetEntitySha256 仅在实体尚无哈希时写入 sha256；已有不同值时返回 ErrEntityHashConflict。
+	SetEntitySha256(ctx context.Context, id int, sum string) error
+	// FindOwnFilesBySha256 在用户“我的文件”（不含回收站与分享给我的文件）中查找当前版本哈希属于 sums 的文件，
+	// 最多返回 limit 个；同时返回这些文件主实体 ID 到哈希的映射。
+	FindOwnFilesBySha256(ctx context.Context, ownerID int, sums []string, limit int) ([]*ent.File, map[int]string, error)
+	// CountOwnFileHashCoverage 统计用户“我的文件”中当前版本的哈希覆盖情况，computablePolicyTypes 为可由服务端计算的策略类型。
+	CountOwnFileHashCoverage(ctx context.Context, ownerID int, computablePolicyTypes []string) (*HashCoverage, error)
 }
 
 func NewFileClient(client *ent.Client, dbType conf.DBType, hasher hashid.Encoder) FileClient {

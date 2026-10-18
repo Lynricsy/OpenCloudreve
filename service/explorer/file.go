@@ -158,6 +158,8 @@ type (
 		OrderBy        string `uri:"order_by" form:"order_by" json:"order_by"`
 		OrderDirection string `uri:"order_direction" form:"order_direction" json:"order_direction"`
 		NextPageToken  string `uri:"next_page_token" form:"next_page_token" json:"next_page_token"`
+		// Hash 为 true 时同时返回文件当前版本的 SHA-256 及计算状态
+		Hash bool `uri:"hash" form:"hash" json:"hash"`
 	}
 )
 
@@ -182,6 +184,7 @@ func (service *ListFileService) List(c *gin.Context) (*ListResponse, error) {
 		Order:          service.OrderBy,
 		OrderDirection: service.OrderDirection,
 		PageToken:      service.NextPageToken,
+		LoadEntities:   service.Hash,
 		StreamResponseCallback: func(parent fs.File, files []fs.File) {
 			if !streamed {
 				WriteEventSourceHeader(c)
@@ -189,7 +192,11 @@ func (service *ListFileService) List(c *gin.Context) (*ListResponse, error) {
 			}
 
 			WriteEventSource(c, "file", lo.Map(files, func(file fs.File, index int) *FileResponse {
-				return BuildFileResponse(c, user, file, hasher, nil)
+				res := BuildFileResponse(c, user, file, hasher, nil)
+				if service.Hash {
+					fillFileHash(c, m, res, file)
+				}
+				return res
 			}))
 		},
 	})
@@ -198,6 +205,11 @@ func (service *ListFileService) List(c *gin.Context) (*ListResponse, error) {
 	}
 
 	listResponse := BuildListResponse(c, user, parent, res, hasher, dep.StoragePolicyClient())
+	if service.Hash {
+		for i, f := range res.Files {
+			fillFileHash(c, m, &listResponse.Files[i], f)
+		}
+	}
 	if streamed {
 		WriteEventSource(c, "list", listResponse)
 		return nil, ErrSSETakeOver

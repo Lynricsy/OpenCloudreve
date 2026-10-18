@@ -141,6 +141,20 @@ func (ec *EntityCreate) SetProps(tp *types.EntityProps) *EntityCreate {
 	return ec
 }
 
+// SetSha256 sets the "sha256" field.
+func (ec *EntityCreate) SetSha256(s string) *EntityCreate {
+	ec.mutation.SetSha256(s)
+	return ec
+}
+
+// SetNillableSha256 sets the "sha256" field if the given value is not nil.
+func (ec *EntityCreate) SetNillableSha256(s *string) *EntityCreate {
+	if s != nil {
+		ec.SetSha256(*s)
+	}
+	return ec
+}
+
 // AddFileIDs adds the "file" edge to the File entity by IDs.
 func (ec *EntityCreate) AddFileIDs(ids ...int) *EntityCreate {
 	ec.mutation.AddFileIDs(ids...)
@@ -267,6 +281,11 @@ func (ec *EntityCreate) check() error {
 	if _, ok := ec.mutation.StoragePolicyEntities(); !ok {
 		return &ValidationError{Name: "storage_policy_entities", err: errors.New(`ent: missing required field "Entity.storage_policy_entities"`)}
 	}
+	if v, ok := ec.mutation.Sha256(); ok {
+		if err := entity.Sha256Validator(v); err != nil {
+			return &ValidationError{Name: "sha256", err: fmt.Errorf(`ent: validator failed for field "Entity.sha256": %w`, err)}
+		}
+	}
 	if _, ok := ec.mutation.StoragePolicyID(); !ok {
 		return &ValidationError{Name: "storage_policy", err: errors.New(`ent: missing required edge "Entity.storage_policy"`)}
 	}
@@ -339,6 +358,10 @@ func (ec *EntityCreate) createSpec() (*Entity, *sqlgraph.CreateSpec) {
 	if value, ok := ec.mutation.Props(); ok {
 		_spec.SetField(entity.FieldProps, field.TypeJSON, value)
 		_node.Props = value
+	}
+	if value, ok := ec.mutation.Sha256(); ok {
+		_spec.SetField(entity.FieldSha256, field.TypeString, value)
+		_node.Sha256 = &value
 	}
 	if nodes := ec.mutation.FileIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -604,6 +627,24 @@ func (u *EntityUpsert) ClearProps() *EntityUpsert {
 	return u
 }
 
+// SetSha256 sets the "sha256" field.
+func (u *EntityUpsert) SetSha256(v string) *EntityUpsert {
+	u.Set(entity.FieldSha256, v)
+	return u
+}
+
+// UpdateSha256 sets the "sha256" field to the value that was provided on create.
+func (u *EntityUpsert) UpdateSha256() *EntityUpsert {
+	u.SetExcluded(entity.FieldSha256)
+	return u
+}
+
+// ClearSha256 clears the value of the "sha256" field.
+func (u *EntityUpsert) ClearSha256() *EntityUpsert {
+	u.SetNull(entity.FieldSha256)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -835,6 +876,27 @@ func (u *EntityUpsertOne) UpdateProps() *EntityUpsertOne {
 func (u *EntityUpsertOne) ClearProps() *EntityUpsertOne {
 	return u.Update(func(s *EntityUpsert) {
 		s.ClearProps()
+	})
+}
+
+// SetSha256 sets the "sha256" field.
+func (u *EntityUpsertOne) SetSha256(v string) *EntityUpsertOne {
+	return u.Update(func(s *EntityUpsert) {
+		s.SetSha256(v)
+	})
+}
+
+// UpdateSha256 sets the "sha256" field to the value that was provided on create.
+func (u *EntityUpsertOne) UpdateSha256() *EntityUpsertOne {
+	return u.Update(func(s *EntityUpsert) {
+		s.UpdateSha256()
+	})
+}
+
+// ClearSha256 clears the value of the "sha256" field.
+func (u *EntityUpsertOne) ClearSha256() *EntityUpsertOne {
+	return u.Update(func(s *EntityUpsert) {
+		s.ClearSha256()
 	})
 }
 
@@ -1240,6 +1302,27 @@ func (u *EntityUpsertBulk) UpdateProps() *EntityUpsertBulk {
 func (u *EntityUpsertBulk) ClearProps() *EntityUpsertBulk {
 	return u.Update(func(s *EntityUpsert) {
 		s.ClearProps()
+	})
+}
+
+// SetSha256 sets the "sha256" field.
+func (u *EntityUpsertBulk) SetSha256(v string) *EntityUpsertBulk {
+	return u.Update(func(s *EntityUpsert) {
+		s.SetSha256(v)
+	})
+}
+
+// UpdateSha256 sets the "sha256" field to the value that was provided on create.
+func (u *EntityUpsertBulk) UpdateSha256() *EntityUpsertBulk {
+	return u.Update(func(s *EntityUpsert) {
+		s.UpdateSha256()
+	})
+}
+
+// ClearSha256 clears the value of the "sha256" field.
+func (u *EntityUpsertBulk) ClearSha256() *EntityUpsertBulk {
+	return u.Update(func(s *EntityUpsert) {
+		s.ClearSha256()
 	})
 }
 

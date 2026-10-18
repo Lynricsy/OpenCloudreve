@@ -44,6 +44,8 @@ type Entity struct {
 	UploadSessionID *uuid.UUID `json:"upload_session_id,omitempty"`
 	// Props holds the value of the "props" field.
 	Props *types.EntityProps `json:"props,omitempty"`
+	// Sha256 holds the value of the "sha256" field.
+	Sha256 *string `json:"sha256,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the EntityQuery when eager-loading is set.
 	Edges        EntityEdges `json:"edges"`
@@ -109,7 +111,7 @@ func (*Entity) scanValues(columns []string) ([]any, error) {
 			values[i] = new([]byte)
 		case entity.FieldID, entity.FieldType, entity.FieldSize, entity.FieldReferenceCount, entity.FieldStoragePolicyEntities, entity.FieldCreatedBy:
 			values[i] = new(sql.NullInt64)
-		case entity.FieldSource:
+		case entity.FieldSource, entity.FieldSha256:
 			values[i] = new(sql.NullString)
 		case entity.FieldCreatedAt, entity.FieldUpdatedAt, entity.FieldDeletedAt:
 			values[i] = new(sql.NullTime)
@@ -204,6 +206,13 @@ func (e *Entity) assignValues(columns []string, values []any) error {
 					return fmt.Errorf("unmarshal field props: %w", err)
 				}
 			}
+		case entity.FieldSha256:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field sha256", values[i])
+			} else if value.Valid {
+				e.Sha256 = new(string)
+				*e.Sha256 = value.String
+			}
 		default:
 			e.selectValues.Set(columns[i], values[i])
 		}
@@ -291,6 +300,11 @@ func (e *Entity) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("props=")
 	builder.WriteString(fmt.Sprintf("%v", e.Props))
+	builder.WriteString(", ")
+	if v := e.Sha256; v != nil {
+		builder.WriteString("sha256=")
+		builder.WriteString(*v)
+	}
 	builder.WriteByte(')')
 	return builder.String()
 }

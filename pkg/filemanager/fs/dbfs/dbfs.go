@@ -173,6 +173,9 @@ func (f *DBFS) List(ctx context.Context, path *fs.URI, opts ...fs.Option) (fs.Fi
 	if o.loadFilePublicMetadata {
 		ctx = context.WithValue(ctx, inventory.LoadFilePublicMetadata{}, true)
 	}
+	if o.loadFileEntities {
+		ctx = context.WithValue(ctx, inventory.LoadFileEntity{}, true)
+	}
 	if o.loadFileShareIfOwned && parent != nil && parent.OwnerID() == f.user.ID {
 		ctx = context.WithValue(ctx, inventory.LoadFileShare{}, true)
 	}

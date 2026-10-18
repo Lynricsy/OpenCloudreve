@@ -202,6 +202,26 @@ func (eu *EntityUpdate) ClearProps() *EntityUpdate {
 	return eu
 }
 
+// SetSha256 sets the "sha256" field.
+func (eu *EntityUpdate) SetSha256(s string) *EntityUpdate {
+	eu.mutation.SetSha256(s)
+	return eu
+}
+
+// SetNillableSha256 sets the "sha256" field if the given value is not nil.
+func (eu *EntityUpdate) SetNillableSha256(s *string) *EntityUpdate {
+	if s != nil {
+		eu.SetSha256(*s)
+	}
+	return eu
+}
+
+// ClearSha256 clears the value of the "sha256" field.
+func (eu *EntityUpdate) ClearSha256() *EntityUpdate {
+	eu.mutation.ClearSha256()
+	return eu
+}
+
 // AddFileIDs adds the "file" edge to the File entity by IDs.
 func (eu *EntityUpdate) AddFileIDs(ids ...int) *EntityUpdate {
 	eu.mutation.AddFileIDs(ids...)
@@ -329,6 +349,11 @@ func (eu *EntityUpdate) defaults() error {
 
 // check runs all checks and user-defined validators on the builder.
 func (eu *EntityUpdate) check() error {
+	if v, ok := eu.mutation.Sha256(); ok {
+		if err := entity.Sha256Validator(v); err != nil {
+			return &ValidationError{Name: "sha256", err: fmt.Errorf(`ent: validator failed for field "Entity.sha256": %w`, err)}
+		}
+	}
 	if _, ok := eu.mutation.StoragePolicyID(); eu.mutation.StoragePolicyCleared() && !ok {
 		return errors.New(`ent: clearing a required unique edge "Entity.storage_policy"`)
 	}
@@ -388,6 +413,12 @@ func (eu *EntityUpdate) sqlSave(ctx context.Context) (n int, err error) {
 	}
 	if eu.mutation.PropsCleared() {
 		_spec.ClearField(entity.FieldProps, field.TypeJSON)
+	}
+	if value, ok := eu.mutation.Sha256(); ok {
+		_spec.SetField(entity.FieldSha256, field.TypeString, value)
+	}
+	if eu.mutation.Sha256Cleared() {
+		_spec.ClearField(entity.FieldSha256, field.TypeString)
 	}
 	if eu.mutation.FileCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -681,6 +712,26 @@ func (euo *EntityUpdateOne) ClearProps() *EntityUpdateOne {
 	return euo
 }
 
+// SetSha256 sets the "sha256" field.
+func (euo *EntityUpdateOne) SetSha256(s string) *EntityUpdateOne {
+	euo.mutation.SetSha256(s)
+	return euo
+}
+
+// SetNillableSha256 sets the "sha256" field if the given value is not nil.
+func (euo *EntityUpdateOne) SetNillableSha256(s *string) *EntityUpdateOne {
+	if s != nil {
+		euo.SetSha256(*s)
+	}
+	return euo
+}
+
+// ClearSha256 clears the value of the "sha256" field.
+func (euo *EntityUpdateOne) ClearSha256() *EntityUpdateOne {
+	euo.mutation.ClearSha256()
+	return euo
+}
+
 // AddFileIDs adds the "file" edge to the File entity by IDs.
 func (euo *EntityUpdateOne) AddFileIDs(ids ...int) *EntityUpdateOne {
 	euo.mutation.AddFileIDs(ids...)
@@ -821,6 +872,11 @@ func (euo *EntityUpdateOne) defaults() error {
 
 // check runs all checks and user-defined validators on the builder.
 func (euo *EntityUpdateOne) check() error {
+	if v, ok := euo.mutation.Sha256(); ok {
+		if err := entity.Sha256Validator(v); err != nil {
+			return &ValidationError{Name: "sha256", err: fmt.Errorf(`ent: validator failed for field "Entity.sha256": %w`, err)}
+		}
+	}
 	if _, ok := euo.mutation.StoragePolicyID(); euo.mutation.StoragePolicyCleared() && !ok {
 		return errors.New(`ent: clearing a required unique edge "Entity.storage_policy"`)
 	}
@@ -897,6 +953,12 @@ func (euo *EntityUpdateOne) sqlSave(ctx context.Context) (_node *Entity, err err
 	}
 	if euo.mutation.PropsCleared() {
 		_spec.ClearField(entity.FieldProps, field.TypeJSON)
+	}
+	if value, ok := euo.mutation.Sha256(); ok {
+		_spec.SetField(entity.FieldSha256, field.TypeString, value)
+	}
+	if euo.mutation.Sha256Cleared() {
+		_spec.ClearField(entity.FieldSha256, field.TypeString)
 	}
 	if euo.mutation.FileCleared() {
 		edge := &sqlgraph.EdgeSpec{

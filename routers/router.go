@@ -648,6 +648,18 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				middleware.ValidateBatchFileCount(dep, explorer.FileURLParameterCtx{}),
 				controllers.FileURL,
 			)
+			// Get SHA-256 of files, optionally queue computation for own files
+			file.POST("hash",
+				controllers.FromJSON[explorer.FileHashService](explorer.FileHashParameterCtx{}),
+				middleware.ValidateBatchFileCount(dep, explorer.FileHashParameterCtx{}),
+				controllers.FileHash,
+			)
+			// Search own files by SHA-256
+			file.POST("hash/search",
+				middleware.LoginRequired(),
+				controllers.FromJSON[explorer.FileHashSearchService](explorer.FileHashSearchParameterCtx{}),
+				controllers.SearchFileHash,
+			)
 			// Update file content
 			file.PUT("content",
 				middleware.RequiredScopes(types.ScopeFilesWrite),

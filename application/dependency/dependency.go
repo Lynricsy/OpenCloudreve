@@ -675,7 +675,7 @@ func (d *dependency) IoIntenseQueue(ctx context.Context) queue.Queue {
 		queue.WithName("IoIntenseQueue"),
 		queue.WithMaxTaskExecution(queueSetting.MaxExecution),
 		queue.WithResumeTaskType(queue.CreateArchiveTaskType, queue.ExtractArchiveTaskType, queue.RelocateTaskType, queue.ImportTaskType,
-			queue.GDriveBackupTaskType, queue.GDriveRestoreTaskType),
+			queue.GDriveBackupTaskType, queue.GDriveRestoreTaskType, queue.EntityHashTaskType),
 		queue.WithTaskPullInterval(10*time.Second),
 	)
 	return d.ioIntenseQueue

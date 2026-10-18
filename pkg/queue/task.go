@@ -106,6 +106,7 @@ const (
 	ImportTaskType                = "import"
 	GDriveBackupTaskType          = "gdrive_backup"
 	GDriveRestoreTaskType         = "gdrive_restore"
+	EntityHashTaskType            = "entity_hash"
 
 	FullTextIndexTaskType       = "full_text_index"
 	FullTextCopyTaskType        = "full_text_copy"
@@ -117,6 +118,7 @@ const (
 	SlaveUploadTaskType        = "slave_upload"
 	SlaveExtractArchiveType    = "slave_extract_archive"
 	SlaveGDriveBackupTaskType  = "slave_gdrive_backup"
+	SlaveEntityHashTaskType    = "slave_entity_hash"
 )
 
 func init() {

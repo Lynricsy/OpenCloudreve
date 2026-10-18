@@ -41,6 +41,8 @@ type (
 		// StreamResponseCallback is used for streamed list operation, e.g. searching files.
 		// Whenever a new item is found, this callback will be called with the current item and the parent item.
 		StreamResponseCallback func(fs.File, []fs.File)
+		// LoadEntities 同时加载文件的实体（用于返回哈希）
+		LoadEntities bool
 	}
 
 	EntityUrlCache struct {
@@ -67,6 +69,9 @@ func (m *manager) List(ctx context.Context, path *fs.URI, args *ListArgs) (fs.Fi
 		dbfs.WithFilePublicMetadata(),
 		dbfs.WithContextHint(),
 		dbfs.WithFileShareIfOwned(),
+	}
+	if args.LoadEntities {
+		opts = append(opts, dbfs.WithFileEntities())
 	}
 
 	searchParams := path.SearchParameters()

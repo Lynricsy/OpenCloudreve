@@ -4,6 +4,7 @@ import (
 	"entgo.io/ent"
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
+	"entgo.io/ent/schema/index"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/gofrs/uuid"
 )
@@ -28,6 +29,18 @@ func (Entity) Fields() []ent.Field {
 		field.JSON("props", &types.EntityProps{}).
 			Optional().
 			StorageKey("recycle_options"),
+		// sha256 为实体明文内容的小写十六进制 SHA-256，仅由服务端计算后写入；为空表示尚未计算。
+		field.String("sha256").
+			Optional().
+			Nillable().
+			MaxLen(64),
+	}
+}
+
+// Indexes of the Entity.
+func (Entity) Indexes() []ent.Index {
+	return []ent.Index{
+		index.Fields("sha256"),
 	}
 }
 

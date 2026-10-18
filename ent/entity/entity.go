@@ -37,6 +37,8 @@ const (
 	FieldUploadSessionID = "upload_session_id"
 	// FieldProps holds the string denoting the props field in the database.
 	FieldProps = "recycle_options"
+	// FieldSha256 holds the string denoting the sha256 field in the database.
+	FieldSha256 = "sha256"
 	// EdgeFile holds the string denoting the file edge name in mutations.
 	EdgeFile = "file"
 	// EdgeUser holds the string denoting the user edge name in mutations.
@@ -80,6 +82,7 @@ var Columns = []string{
 	FieldCreatedBy,
 	FieldUploadSessionID,
 	FieldProps,
+	FieldSha256,
 }
 
 var (
@@ -114,6 +117,8 @@ var (
 	UpdateDefaultUpdatedAt func() time.Time
 	// DefaultReferenceCount holds the default value on creation for the "reference_count" field.
 	DefaultReferenceCount int
+	// Sha256Validator is a validator for the "sha256" field. It is called by the builders before save.
+	Sha256Validator func(string) error
 )
 
 // OrderOption defines the ordering options for the Entity queries.
@@ -172,6 +177,11 @@ func ByCreatedBy(opts ...sql.OrderTermOption) OrderOption {
 // ByUploadSessionID orders the results by the upload_session_id field.
 func ByUploadSessionID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldUploadSessionID, opts...).ToFunc()
+}
+
+// BySha256 orders the results by the sha256 field.
+func BySha256(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldSha256, opts...).ToFunc()
 }
 
 // ByFileCount orders the results by file count.

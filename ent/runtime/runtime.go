@@ -90,6 +90,10 @@ func init() {
 	entityDescReferenceCount := entityFields[3].Descriptor()
 	// entity.DefaultReferenceCount holds the default value on creation for the reference_count field.
 	entity.DefaultReferenceCount = entityDescReferenceCount.Default.(int)
+	// entityDescSha256 is the schema descriptor for sha256 field.
+	entityDescSha256 := entityFields[8].Descriptor()
+	// entity.Sha256Validator is a validator for the "sha256" field. It is called by the builders before save.
+	entity.Sha256Validator = entityDescSha256.Validators[0].(func(string) error)
 	fileHooks := schema.File{}.Hooks()
 	file.Hooks[0] = fileHooks[0]
 	fileFields := schema.File{}.Fields()
