@@ -289,6 +289,11 @@ const (
 	OAuthClientiOSSecret          = "1kxOW4IyVOkPlsKCnTwzfHyP8XrbpfaF"
 	OAuthClientiOSName            = "application:setting.iOSApp"
 	OAuthClientiOSRedirectURI     = "/callback/ios"
+	// 内置的 OpenCloudreve 移动客户端（iOS/Android），回调为 App 自定义 scheme
+	OAuthClientMobileGUID        = "022afa86-ff52-422e-8dfa-fb2eeaf8cfba"
+	OAuthClientMobileSecret      = "LaUFupO8g1NaDK3WEiyXkWCLgaENdct3"
+	OAuthClientMobileName        = "OpenCloudreve Mobile"
+	OAuthClientMobileRedirectURI = "opencloudreve://oauth/callback"
 )
 
 func migrateOAuthClient(l logging.Logger, client *ent.Client, ctx context.Context) error {
@@ -301,6 +306,10 @@ func migrateOAuthClient(l logging.Logger, client *ent.Client, ctx context.Contex
 	}
 
 	if err := migrateOAuthClientCLI(l, client, ctx); err != nil {
+		return err
+	}
+
+	if err := migrateOAuthClientMobile(l, client, ctx); err != nil {
 		return err
 	}
 
@@ -367,6 +376,34 @@ func migrateOAuthClientCLI(l logging.Logger, client *ent.Client, ctx context.Con
 		SetIsEnabled(true).
 		Save(ctx); err != nil {
 		return fmt.Errorf("failed to create default CLI OAuth client: %w", err)
+	}
+	return nil
+}
+
+// migrateOAuthClientMobile 写入内置移动端 client；已存在时保留管理员的修改。
+// 移动端需要完整功能（含管理），因此申请全部写 scope（本分支已删除支付，不含 Finance.*）。
+func migrateOAuthClientMobile(l logging.Logger, client *ent.Client, ctx context.Context) error {
+	if _, err := client.OAuthClient.Query().Where(oauthclient.GUID(OAuthClientMobileGUID)).First(ctx); err == nil {
+		l.Info("Default OAuth client (GUID=%s) already exists, skip migrating.", OAuthClientMobileGUID)
+		return nil
+	} else if !ent.IsNotFound(err) {
+		return fmt.Errorf("failed to query default mobile OAuth client: %w", err)
+	}
+
+	if _, err := client.OAuthClient.Create().
+		SetGUID(OAuthClientMobileGUID).
+		SetSecret(OAuthClientMobileSecret).
+		SetName(OAuthClientMobileName).
+		SetRedirectUris([]string{OAuthClientMobileRedirectURI}).
+		SetScopes([]string{
+			types.ScopeProfile, types.ScopeEmail, types.ScopeOpenID, types.ScopeOfflineAccess,
+			types.ScopeUserInfoWrite, types.ScopeUserSecurityInfoWrite, types.ScopeWorkflowWrite,
+			types.ScopeFilesWrite, types.ScopeSharesWrite, types.ScopeDavAccountWrite, types.ScopeAdminWrite,
+		}).
+		SetProps(&types.OAuthClientProps{Icon: "/static/img/cloudreve.svg", RefreshTokenTTL: 7776000}).
+		SetIsEnabled(true).
+		Save(ctx); err != nil {
+		return fmt.Errorf("failed to create default mobile OAuth client: %w", err)
 	}
 	return nil
 }
