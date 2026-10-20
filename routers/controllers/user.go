@@ -121,6 +121,31 @@ func UserIssueToken(c *gin.Context) {
 	})
 }
 
+// UserCreateHandoff 为当前用户生成一次性会话交接码
+func UserCreateHandoff(c *gin.Context) {
+	res, err := user.CreateHandoff(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		return
+	}
+
+	c.JSON(200, serializer.Response{Data: res})
+}
+
+// UserExchangeHandoff 兑换会话交接码，成功后由 UserIssueToken 签发令牌
+func UserExchangeHandoff(c *gin.Context) {
+	service := ParametersFromContext[*user.ExchangeHandoffService](c, user.ExchangeHandoffParamCtx{})
+	expectedUser, err := service.Exchange(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	util.WithValue(c, inventory.UserCtx{}, expectedUser)
+	c.Next()
+}
+
 // UserRefreshToken refreshes token pair for user
 func UserRefreshToken(c *gin.Context) {
 	service := ParametersFromContext[*user.RefreshTokenService](c, user.RefreshTokenParameterCtx{})

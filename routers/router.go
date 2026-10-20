@@ -327,6 +327,22 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				controllers.UserPrepareLogin,
 			)
 
+			// 会话交接：原生客户端换取一次性交接码，在网页视图中免登录打开站点。
+			// 交接后得到的是不受 scope 限制的网页会话，因此受 scope 限制的令牌（OAuth）
+			// 必须具备内置移动端 client 的全部写权限，防止权限较少的第三方应用借此提权。
+			session.POST("handoff",
+				middleware.LoginRequired(),
+				middleware.RequiredScopes(types.ScopeUserInfoWrite, types.ScopeUserSecurityInfoWrite,
+					types.ScopeWorkflowWrite, types.ScopeFilesWrite, types.ScopeSharesWrite,
+					types.ScopeDavAccountWrite, types.ScopeAdminWrite),
+				controllers.UserCreateHandoff,
+			)
+			session.POST("handoff/exchange",
+				controllers.FromJSON[usersvc.ExchangeHandoffService](usersvc.ExchangeHandoffParamCtx{}),
+				controllers.UserExchangeHandoff,
+				controllers.UserIssueToken,
+			)
+
 			oauthRouter := session.Group("oauth")
 			{
 				oauthRouter.GET("app/:app_id",
