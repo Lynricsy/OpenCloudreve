@@ -17,7 +17,7 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 ## 2. 构建、运行与验证
 
 - **后端编译**依赖 `application/statics/assets.zip`（`go:embed`，已 gitignore）。只需要编译时，放一个占位 zip 即可，内含 `assets/build/index.html`。本机没有 `zip` 命令，用 Python 的 `zipfile` 生成。
-- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.10`）；CI 发布 tag 时会强制要求 tag 与常量一致。新增 `DefaultSettings` 键或改动 ent schema 时必须同时提升版本号：`migrateDefaultSettings` 和 `Schema.Create`（自动加列/索引）都只在库里没有当前版本标记时运行，而 `SettingClient.Set` 只更新已存在的行，缺行时设置接口会静默不生效。
+- **版本号**：上游源码里的 `constants.BackendVersion` 是过期的默认值（上游 4.19.1 的源码里仍写着 4.14.0），正式版本由 goreleaser 按 git tag 用 ldflags 注入。判断上游版本要用 `git describe --tags upstream/master`，不要看 `constants.go`。本分支的源码常量就是真实版本（当前 `4.19.11`）；CI 发布 tag 时会强制要求 tag 与常量一致。新增 `DefaultSettings` 键或改动 ent schema 时必须同时提升版本号：`migrateDefaultSettings` 和 `Schema.Create`（自动加列/索引）都只在库里没有当前版本标记时运行，而 `SettingClient.Set` 只更新已存在的行，缺行时设置接口会静默不生效。
 - **正式打包**：`.build/build-assets.sh <版本号>`。这个脚本会把前端 `package.json` 的版本改成传入的版本号，需要系统有 `zip` 命令。如果直接 `yarn build`，启动时会报 `Static resource version mismatch`，页面仍能用。版本号必须等于 `constants.BackendVersion`。
 - **前端**：用 `yarn`（`npm i -g yarn@1`）。`assets/` 有 husky pre-commit，会对暂存文件跑 prettier（lint-staged）。
 - **类型检查**：`.github/scripts/tsc-check.sh`（需先在 `assets/` 里 `yarn install`）。上游本身就带一批 TS 错误（分叉时 127 条，现在 115 条），基线存在 `.github/tsc-baseline.txt`，脚本会去掉行列号、按字节序排序后对比，出现基线之外的错误就失败。`vite build` 不做类型检查，所以 `yarn build` 通过不代表类型正确。错误减少，或者因为权限位增减导致 `GroupPermission` 类型字面量的报错文本变化时，确认没有真正新增错误后，运行 `.github/scripts/tsc-check.sh --update` 更新基线。
@@ -111,6 +111,12 @@ Cloudreve 社区版 v4 的个人分支。原则：**界面上显示的功能都�
 - **撤销授权**（`DELETE /session/oauth/grant/:app_id`）：`oauth_grants` 是物理删除（软删除行会占住 `(user_id, client_id)` 唯一索引，导致重新授权后刷新令牌永久失效，见 issue #1）；`UpsertGrant` 会先清掉旧版本留下的软删除行。重新授权总是新建授权记录，`tokenAuth.Refresh` 拒绝 `NotBefore` 早于当前授权 `created_at` 超过 2 秒的刷新令牌，所以撤销前签发的令牌不会因重新授权复活；例外是新授权创建前 2 秒内签发的令牌仍可刷新（容差用于抵消 `NotBefore` 截断到秒和 MySQL datetime 四舍五入）。同一 client 被多端共用时，对仍有效的授权重新同意不会新建记录，但会用本次请求的 scopes 覆盖授权的 scopes，其他端令牌的 scopes 若超出新范围，刷新时会被拒绝。
 - **其他契约**：SSE `GET /file/events`（要求 `X-Cr-Client-Id` 为 UUID）；`ExtendedInfo.storage_policy_inherited` 是必填字段；上传凭证不得是 LB 策略。
 - **已知不一致**：客户端期望 `GET /user/setting` 返回 `credit` 字段（Pro 积分残留），我们没有补，客户端目前也不调用这个接口。
+
+### 3.7 OpenCloudreve 移动客户端契约（`Lynricsy/CloudreveMobile`，4.19.11 起）
+- **OAuth**：内置 client `022afa86-ff52-422e-8dfa-fb2eeaf8cfba`（`migrateOAuthClientMobile`，已存在时不覆盖管理员修改），回调 `opencloudreve://oauth/callback`（`redirect.go` 精确比较，自定义 scheme 无需特殊处理），PKCE S256，scopes 为全部写权限加 `Admin.Write`（不含 `Finance.*`）。iOS 的 Passkey 登录走这条 OAuth 流程。
+- **Android Passkey**：设置项 `mobile_android_package`（默认 `plus.ling.opencloudreve`）与 `mobile_android_sha256_fingerprints`（逗号分隔，大小写和冒号都可，非法项跳过），经 `setting.Provider.MobileApp` 读取，后台在“用户会话”页签。`GET /.well-known/assetlinks.json` 发布 `handle_all_urls` + `get_login_creds`（指纹统一输出为大写冒号格式；没有合法指纹时返回 `[]`），路由注册在 `FrontendFileHandler` 之前，且 `/.well-known/` 在 SPA 回退的跳过列表里。WebAuthn 的 `RPOrigins` 追加 `android:apk-key-hash:<证书 SHA-256 的 base64url 无填充>`。`dependency.WebAuthn` 每次调用都重新构建配置，所以这两项保存后立即生效，不需要重启。
+- **会话交接**：`POST /session/handoff` 返回 `{code}`（32 字节随机数 base64url，KV `user_handoff_<code>` 存 uid，60 秒）；`POST /session/handoff/exchange {code}` 一次性兑换（进程内锁保证“读取 + 删除”原子，前提是主机只有一个进程），按密码登录的规则校验用户状态，响应与密码登录相同的 `{user, token}`。兑换得到的是不受 scope 限制的网页会话，所以受 scope 限制的令牌创建交接码时必须带全部写 scope 加 `Admin.Write`（移动端 client 申请的就是这一组），权限较少的第三方 OAuth 应用不能借此提权。前端 `/session/handoff?code=&redirect=` 兑换后跳转，`redirect` 只接受以 `/` 开头且不以 `//` 开头的站内路径，否则跳 `/home`。
+- **WebView 验证码**：前端 `/captcha?theme=dark|light&lng=` 无外壳渲染站点当前的验证码组件，完成后把 `{captcha?, ticket?}` 的 JSON 投递给 `window.CaptchaBridge.onToken`（Android）和 `window.webkit.messageHandlers.captcha.postMessage`（iOS）。
 
 ## 4. 同步上游
 
