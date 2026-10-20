@@ -160,6 +160,8 @@ type (
 		Cron(ctx context.Context, t CronType) string
 		// GDriveBackup returns the Google Drive backup settings.
 		GDriveBackup(ctx context.Context) *GDriveBackup
+		// MobileApp returns the mobile client settings.
+		MobileApp(ctx context.Context) *MobileAppSetting
 		// Theme returns the theme settings.
 		Theme(ctx context.Context) *Theme
 		// Logo returns the logo settings.
@@ -899,6 +901,20 @@ func (s *settingProvider) ForgotPasswordCaptchaEnabled(ctx context.Context) bool
 
 func (s *settingProvider) AuthnEnabled(ctx context.Context) bool {
 	return s.getBoolean(ctx, "authn_enabled", false)
+}
+
+func (s *settingProvider) MobileApp(ctx context.Context) *MobileAppSetting {
+	// 指纹以逗号分隔，解析时去掉空白并跳过空项
+	fingerprints := make([]string, 0)
+	for _, item := range strings.Split(s.getString(ctx, "mobile_android_sha256_fingerprints", ""), ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			fingerprints = append(fingerprints, item)
+		}
+	}
+	return &MobileAppSetting{
+		AndroidPackage:      strings.TrimSpace(s.getString(ctx, "mobile_android_package", "")),
+		AndroidFingerprints: fingerprints,
+	}
 }
 
 func (s *settingProvider) RegisterEnabled(ctx context.Context) bool {

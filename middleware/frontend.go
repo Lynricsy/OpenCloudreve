@@ -45,6 +45,7 @@ func FrontendFileHandler(dep dependency.Dep) gin.HandlerFunc {
 			strings.HasPrefix(path, "/dav") ||
 			strings.HasPrefix(path, "/f/") ||
 			strings.HasPrefix(path, "/s/") ||
+			strings.HasPrefix(path, "/.well-known/") ||
 			path == "/manifest.json" {
 			c.Next()
 			return

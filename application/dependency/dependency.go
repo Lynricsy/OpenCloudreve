@@ -2,6 +2,7 @@ package dependency
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	iofs "io/fs"
 	"net/url"
@@ -247,13 +248,19 @@ func (d *dependency) WebAuthn(ctx context.Context) (*webauthn.WebAuthn, error) {
 
 	settings := d.SettingProvider()
 	siteBasic := settings.SiteBasic(ctx)
+	origins := lo.Map(settings.AllSiteURLs(ctx), func(item *url.URL, index int) string {
+		item.Path = ""
+		return item.String()
+	})
+	// Android 原生 Credential Manager 发起的 Passkey 请求，origin 为 android:apk-key-hash:<证书 SHA-256 的 base64url>
+	for _, hash := range settings.MobileApp(ctx).AndroidCertHashes() {
+		origins = append(origins, "android:apk-key-hash:"+base64.RawURLEncoding.EncodeToString(hash))
+	}
+
 	wConfig := &webauthn.Config{
 		RPDisplayName: siteBasic.Name,
 		RPID:          settings.SiteURL(ctx).Hostname(),
-		RPOrigins: lo.Map(settings.AllSiteURLs(ctx), func(item *url.URL, index int) string {
-			item.Path = ""
-			return item.String()
-		}), // The origin URLs allowed for WebAuthn requests
+		RPOrigins:     origins, // The origin URLs allowed for WebAuthn requests
 	}
 
 	return webauthn.New(wConfig)

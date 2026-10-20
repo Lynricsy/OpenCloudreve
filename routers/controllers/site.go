@@ -1,6 +1,9 @@
 package controllers
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/cloudreve/Cloudreve/v4/application/constants"
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
@@ -70,5 +73,41 @@ func Manifest(c *gin.Context) {
 		"display":          pwaOpts.Display,
 		"theme_color":      pwaOpts.ThemeColor,
 		"background_color": pwaOpts.BackgroundColor,
+	})
+}
+
+// AssetLinks 输出 Android 数字资产链接（/.well-known/assetlinks.json），
+// 让 Android 客户端的 Passkey（Credential Manager）与链接校验信任本站。未配置指纹时返回空数组。
+func AssetLinks(c *gin.Context) {
+	mobile := dependency.FromContext(c).SettingProvider().MobileApp(c)
+	hashes := mobile.AndroidCertHashes()
+	c.Header("Cache-Control", "public, no-cache")
+	if mobile.AndroidPackage == "" || len(hashes) == 0 {
+		c.JSON(200, []any{})
+		return
+	}
+
+	// 统一输出为大写冒号分隔的十六进制
+	fingerprints := make([]string, 0, len(hashes))
+	for _, hash := range hashes {
+		parts := make([]string, len(hash))
+		for i, b := range hash {
+			parts[i] = fmt.Sprintf("%02X", b)
+		}
+		fingerprints = append(fingerprints, strings.Join(parts, ":"))
+	}
+
+	c.JSON(200, []map[string]any{
+		{
+			"relation": []string{
+				"delegate_permission/common.handle_all_urls",
+				"delegate_permission/common.get_login_creds",
+			},
+			"target": map[string]any{
+				"namespace":                "android_app",
+				"package_name":             mobile.AndroidPackage,
+				"sha256_cert_fingerprints": fingerprints,
+			},
+		},
 	})
 }

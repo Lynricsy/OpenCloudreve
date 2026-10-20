@@ -208,6 +208,8 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 	*/
 	r.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{"/api/"})))
 	r.Use(middleware.SharePreview(dep))
+	// Android 数字资产链接，必须在 SPA 回退之前注册
+	r.GET("/.well-known/assetlinks.json", controllers.AssetLinks)
 	r.Use(middleware.FrontendFileHandler(dep))
 	r.GET("manifest.json", controllers.Manifest)
 

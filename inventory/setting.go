@@ -571,6 +571,8 @@ var DefaultSettings = map[string]string{
 	"gdrive_backup_proxy":                        "",
 	"gdrive_backup_daily_limit":                  "0",
 	"authn_enabled":                              "1",
+	"mobile_android_package":                     "plus.ling.opencloudreve",
+	"mobile_android_sha256_fingerprints":         "",
 	"captcha_type":                               "normal",
 	"captcha_height":                             "60",
 	"captcha_width":                              "240",

@@ -1,6 +1,8 @@
 package setting
 
 import (
+	"encoding/hex"
+	"strings"
 	"time"
 )
 
@@ -135,6 +137,28 @@ type GDriveBackup struct {
 	Proxy string
 	// DailyLimit 每天（服务器时区的自然日）最多上传到 Drive 的字节数，0 表示不限
 	DailyLimit int64
+}
+
+// MobileAppSetting 移动客户端相关设置。
+type MobileAppSetting struct {
+	// AndroidPackage Android 应用包名
+	AndroidPackage string
+	// AndroidFingerprints Android 签名证书的 SHA-256 指纹，大写冒号分隔十六进制（如 AA:BB:...）
+	AndroidFingerprints []string
+}
+
+// AndroidCertHashes 把指纹解码为 32 字节的 SHA-256 摘要（忽略冒号与大小写），
+// 格式不合法的指纹直接跳过。
+func (m *MobileAppSetting) AndroidCertHashes() [][]byte {
+	res := make([][]byte, 0, len(m.AndroidFingerprints))
+	for _, fp := range m.AndroidFingerprints {
+		b, err := hex.DecodeString(strings.ReplaceAll(fp, ":", ""))
+		if err != nil || len(b) != 32 {
+			continue
+		}
+		res = append(res, b)
+	}
+	return res
 }
 
 type Logo struct {
