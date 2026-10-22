@@ -763,6 +763,12 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 					controllers.FromJSON[explorer.DeleteUploadSessionService](explorer.DeleteUploadSessionParameterCtx{}),
 					controllers.DeleteUploadSession,
 				)
+				// 查询上传会话状态：结果未知时确认会话是否已完成
+				upload.GET(":sessionId",
+					middleware.LoginRequired(),
+					controllers.FromUri[explorer.UploadSessionStatusService](explorer.UploadSessionStatusParameterCtx{}),
+					controllers.GetUploadSessionStatus,
+				)
 			}
 			// Pin file
 			pin := file.Group("pin", middleware.RequiredScopes(types.ScopeFilesWrite))

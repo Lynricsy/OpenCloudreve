@@ -271,6 +271,19 @@ func DeleteUploadSession(c *gin.Context) {
 	c.JSON(200, serializer.Response{})
 }
 
+// GetUploadSessionStatus 查询上传会话状态（uploading / completed）
+func GetUploadSessionStatus(c *gin.Context) {
+	service := ParametersFromContext[*explorer.UploadSessionStatusService](c, explorer.UploadSessionStatusParameterCtx{})
+	resp, err := service.Get(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	c.JSON(200, serializer.Response{Data: resp})
+}
+
 // CreateUploadSession 创建上传会话
 func CreateUploadSession(c *gin.Context) {
 	service := ParametersFromContext[*explorer.CreateUploadSessionService](c, explorer.CreateUploadSessionParameterCtx{})

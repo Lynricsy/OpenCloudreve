@@ -488,6 +488,10 @@ func (m *manager) CompleteUpload(ctx context.Context, session *fs.UploadSession)
 		}
 
 		ownerId = file.OwnerID()
+		// 完成回执须在删除会话之前写入，客户端查询时“会话存在”与“已有回执”至少满足一个
+		if err := recordUploadReceipt(m.kv, session); err != nil {
+			m.l.Warning("Failed to record upload receipt for session %q: %s", session.Props.UploadSessionID, err)
+		}
 	}
 
 	if session.SentinelTaskID > 0 {
