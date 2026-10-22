@@ -28,6 +28,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// handoffCreateScopes 是受 scope 限制的令牌（OAuth）创建会话交接码所需的全部 scope。
+// 交接后得到的是不受 scope 限制、可刷新的网页会话，因此必须具备内置移动端 client 的全部写权限，
+// 防止权限较少的第三方应用借此提权；还必须有 offline_access，否则未获离线授权的短期令牌
+// 可借交接换成可持续刷新的会话（OAuth 兑换在没有 offline_access 时不签发 refresh token）。
+var handoffCreateScopes = []string{
+	types.ScopeUserInfoWrite, types.ScopeUserSecurityInfoWrite,
+	types.ScopeWorkflowWrite, types.ScopeFilesWrite, types.ScopeSharesWrite,
+	types.ScopeDavAccountWrite, types.ScopeAdminWrite, types.ScopeOfflineAccess,
+}
+
 // InitRouter 初始化路由
 func InitRouter(dep dependency.Dep) *gin.Engine {
 	l := dep.Logger()
@@ -328,13 +338,9 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 			)
 
 			// 会话交接：原生客户端换取一次性交接码，在网页视图中免登录打开站点。
-			// 交接后得到的是不受 scope 限制的网页会话，因此受 scope 限制的令牌（OAuth）
-			// 必须具备内置移动端 client 的全部写权限，防止权限较少的第三方应用借此提权。
 			session.POST("handoff",
 				middleware.LoginRequired(),
-				middleware.RequiredScopes(types.ScopeUserInfoWrite, types.ScopeUserSecurityInfoWrite,
-					types.ScopeWorkflowWrite, types.ScopeFilesWrite, types.ScopeSharesWrite,
-					types.ScopeDavAccountWrite, types.ScopeAdminWrite),
+				middleware.RequiredScopes(handoffCreateScopes...),
 				controllers.UserCreateHandoff,
 			)
 			session.POST("handoff/exchange",
